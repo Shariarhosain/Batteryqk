@@ -1,0 +1,187 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+// --------------------------------------------------
+//  Enums
+// --------------------------------------------------
+
+enum NotificationType {
+  BOOKING
+  SYSTEM
+  LOYALTY
+  PROMOTION
+  REMINDER
+  CANCELLATION
+  GENERAL
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum AuditLogAction {
+  USER_REGISTERED
+  USER_LOGIN
+  USER_PROFILE_UPDATED
+  USER_PASSWORD_CHANGED
+  USER_DELETED
+  BOOKING_CREATED
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_COMPLETED
+  BOOKING_UPDATED
+  BOOKING_REMINDER_SENT
+  LISTING_CREATED
+  LISTING_UPDATED
+  LISTING_DELETED
+  CATEGORY_CREATED
+  CATEGORY_UPDATED
+  CATEGORY_DELETED
+  COUPON_CREATED
+  COUPON_UPDATED
+  COUPON_DELETED
+  COUPON_APPLIED
+  REWARD_GRANTED
+  REWARD_REDEEMED
+  NOTIFICATION_SENT
+  NOTIFICATIONS_MARKED_AS_READ
+  ADMIN_ACTION
+  SYSTEM_EVENT
+  GENERAL_CREATE
+  GENERAL_UPDATE
+  GENERAL_DELETE
+}
+enum BookingPaymentMethod {
+  paid 
+  unpaid
+ 
+}
+
+// --------------------------------------------------
+//  Models
+// --------------------------------------------------
+
+model User {
+  id            Int      @id @default(autoincrement())
+  fname         String?
+  lname         String?
+  email         String   @unique
+  uid          String   @unique @map("user_id") // Unique identifier for the user, can be used for external systems
+  password      String?  // Password is optional for users who can log in with social accounts
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  bookings      Booking[] @relation("UserBookings")
+  rewards       Reward[]
+  notifications Notification[]
+  auditLogs     AuditLog[] @relation("UserAuditLogs")
+}
+
+model Category {
+  id            Int       @id @default(autoincrement())
+  mainCategory  String?   @map("main_category")
+  subCategories String?   @map("sub_categories")
+  specificItem  String[]   @map("specific_item")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  listings      Listing[] @relation("ListingToCategory")
+}
+
+model Listing {
+  id          Int       @id @default(autoincrement())
+  name        String?
+  categoryId  Int?      @map("category_id") // Made nullable
+  category    Category? @relation("ListingToCategory", fields: [categoryId], references: [id], onDelete: SetNull) // If Category is deleted, categoryId in Listing becomes NULL
+  price       Decimal?
+  main_image  String?
+  sub_images  String[]
+  description String?   @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  bookings    Booking[] @relation("ListingBookings")
+}
+
+model Booking {
+  id              Int            @id @default(autoincrement())
+  userId          Int            @map("user_id")
+  user            User           @relation("UserBookings", fields: [userId], references: [id], onDelete: Cascade) // Bookings are deleted if User is deleted
+  listingId       Int?           @map("listing_id") // Made nullable
+  listing         Listing?       @relation("ListingBookings", fields: [listingId], references: [id], onDelete: SetNull) // If Listing is deleted, listingId in Booking becomes NULL
+  bookingDate     DateTime?      @map("booking_date")
+  additionalNote  String?        @map("additional_note") @db.Text
+  Payment        BookingPaymentMethod?        @map("payment_method") // e.g. "credit_card", "paypal"
+  numberOfPersons Int?           @map("number_of_persons")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  status          BookingStatus? @default(PENDING) @map("status")
+  couponCode      String?        @map("coupon_code") // This field will be set to NULL if the related Coupon is deleted (due to onDelete: SetNull on the relation)
+  coupon          Coupon?        @relation("BookingToCoupon", fields: [couponCode], references: [couponCode], onDelete: SetNull) // If Coupon is deleted, couponCode FK in Booking becomes NULL
+}
+
+model Coupon {
+  id         Int       @id @default(autoincrement())
+  couponCode String    @unique @map("coupon_code")
+  discount   Decimal?
+  isActive   Boolean   @default(true) @map("is_active")
+  validUntil DateTime? @map("valid_until")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  bookings   Booking[] @relation("BookingToCoupon")
+}
+
+model Reward {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade) // Rewards are deleted if User is deleted
+  points      Int?
+  description String?
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+}
+
+model Notification {
+  id          Int              @id @default(autoincrement())
+  userId      Int              @map("user_id")
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade) // Notifications are deleted if User is deleted
+  title       String
+  message     String           @db.Text
+  type        NotificationType
+  isRead      Boolean          @default(false) @map("is_read")
+  link        String?
+  entityId    String?          @map("entity_id")
+  entityType  String?          @map("entity_type")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@index([userId, isRead])
+  @@index([userId, type])
+}
+
+model AuditLog {
+  id          Int            @id @default(autoincrement())
+  timestamp   DateTime       @default(now())
+  userId      Int?           @map("user_id")
+  user        User?          @relation("UserAuditLogs", fields: [userId], references: [id], onDelete: SetNull) // userId is nulled if User is deleted, log entry remains
+  action      AuditLogAction
+  entityName  String?        @map("entity_name")
+  entityId    String?        @map("entity_id")
+  oldValues   Json?          @map("old_values") // Store state before change (for edits/deletes)
+  newValues   Json?          @map("new_values") // Store state after change (for edits/creates)
+  description String?        @db.Text
+  ipAddress   String?        @map("ip_address")
+  userAgent   String?        @map("user_agent")
+
+  @@index([userId])
+  @@index([entityName, entityId])
+  @@index([action])
+  @@index([timestamp])
+}
