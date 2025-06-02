@@ -1,103 +1,239 @@
 import listingService from '../services/listingService.js';
-import { getLanguage, translate } from '../utils/i18n.js';
-import { UPLOAD_DIR } from '../middlewares/multer.js'; // For serving static files if needed
-import fs from 'fs'; // For deleting files if an operation fails mid-way (more complex rollback)
-import path from 'path';
+import { getLanguage, translate } from '../utils/i18n.js'; // Ensure these are correctly exported from your i18n utility
+
+import { validationResult } from 'express-validator';
 
 const listingController = {
-  async createListing(req, res, next) {
-    const lang = getLanguage(req);
-    try {
-      const reqDetails = {
-          ipAddress: req.ip,
-          userAgent: req.headers['user-agent'],
-          actorUserId: req.user?.id // Assuming creator is logged in user
-      };
-      // req.files will be populated by multer: e.g., { main_image: [file1], sub_images: [file2, file3] }
-      const newListing = await listingService.createListing(req.body, req.files, reqDetails);
-      res.status(201).json({
-        message: translate('listing_created', lang, { name: newListing.name || newListing.id }),
-        data: newListing
-      });
-    } catch (error) {
-      // If listing creation fails after files are uploaded, you might want to delete them.
-      // This is a simplified cleanup. For robust solutions, use transaction-like patterns or cleanup jobs.
-      if (req.files) {
-        if (req.files.main_image) req.files.main_image.forEach(file => fs.unlink(path.join(UPLOAD_DIR, file.filename), err => { if (err) console.error("Cleanup failed for main image:", file.filename, err);}));
-        if (req.files.sub_images) req.files.sub_images.forEach(file => fs.unlink(path.join(UPLOAD_DIR, file.filename), err => { if (err) console.error("Cleanup failed for sub image:", file.filename, err);}));
-      }
-      next(error);
-    }
-  },
+    async createListing(req, res) {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ message: translate('validation_error', getLanguage(req), { errors: errors.array() }) });
+                
+            }
 
-  async getAllListings(req, res, next) {
-    try {
-      // Pass query params for filtering if implemented in service
-      const listings = await listingService.getAllListings(req.query);
-      res.status(200).json(listings);
-    } catch (error) {
-      next(error);
-    }
-  },
+            const lang = req.query.lang || req.headers['accept-language'] || 'en';
+            const files = req.files;
+            
+            // Extract request details for audit logging
+            const reqDetails = {
+                actorUserId: req.user?.id,
+                ipAddress: req.ip || req.connection.remoteAddress,
+                userAgent: req.get('User-Agent')
+            };
 
-  async getListingById(req, res, next) {
-    const lang = getLanguage(req);
-    try {
-      const listing = await listingService.getListingById(req.params.id);
-      if (!listing) {
-        return res.status(404).json({ message: translate('listing_not_found', lang) });
-      }
-      res.status(200).json(listing);
-    } catch (error) {
-      next(error);
-    }
-  },
+            const listing = await listingService.createListing(req.body, files, lang, reqDetails);
+            
+            res.status(201).json({
+                success: true,
+                message: 'Listing created successfully',
+                data: listing
+            });
+        } catch (error) {
+            console.error('Error creating listing:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    },
 
-  async updateListing(req, res, next) {
-    const lang = getLanguage(req);
-    try {
-      const reqDetails = {
-          ipAddress: req.ip,
-          userAgent: req.headers['user-agent'],
-          actorUserId: req.user?.id
-      };
-      // req.body might contain 'removed_sub_images' as an array of URLs/filenames to delete.
-      // req.files for new/updated images.
-      const updatedListing = await listingService.updateListing(req.params.id, req.body, req.files, reqDetails);
-      if (!updatedListing) {
-        return res.status(404).json({ message: translate('listing_not_found', lang) });
-      }
-      res.status(200).json({
-        message: translate('listing_updated', lang, { name: updatedListing.name || updatedListing.id }),
-        data: updatedListing
-      });
-    } catch (error) {
-       // Basic cleanup if update fails after new files uploaded
-      if (req.files) {
-        if (req.files.main_image) req.files.main_image.forEach(file => fs.unlink(path.join(UPLOAD_DIR, file.filename), err => { if (err) console.error("Cleanup failed for main image:", file.filename, err);}));
-        if (req.files.sub_images) req.files.sub_images.forEach(file => fs.unlink(path.join(UPLOAD_DIR, file.filename), err => { if (err) console.error("Cleanup failed for sub image:", file.filename, err);}));
-      }
-      next(error);
-    }
-  },
+    async getAllListings(req, res) {
+        try {
+            const lang = req.query.lang || req.headers['accept-language'] || 'en';
+            
+            // Extract filters from query parameters
+            const filters = {};
+            
+            if (req.query.mainCategoryIds) {
+                filters.mainCategoryIds = Array.isArray(req.query.mainCategoryIds) 
+                    ? req.query.mainCategoryIds 
+                    : req.query.mainCategoryIds.split(',');
+            }
+            
+            if (req.query.subCategoryIds) {
+                filters.subCategoryIds = Array.isArray(req.query.subCategoryIds)
+                    ? req.query.subCategoryIds
+                    : req.query.subCategoryIds.split(',');
+            }
+            
+            if (req.query.specificItemIds) {
+                filters.specificItemIds = Array.isArray(req.query.specificItemIds)
+                    ? req.query.specificItemIds
+                    : req.query.specificItemIds.split(',');
+            }
+            
+            if (req.query.minPrice) {
+                filters.minPrice = req.query.minPrice;
+            }
+            
+            if (req.query.maxPrice) {
+                filters.maxPrice = req.query.maxPrice;
+            }
+            
+            if (req.query.location) {
+                filters.location = Array.isArray(req.query.location)
+                    ? req.query.location
+                    : req.query.location.split(',');
+            }
+            
+            if (req.query.facilities) {
+                filters.facilities = Array.isArray(req.query.facilities)
+                    ? req.query.facilities
+                    : req.query.facilities.split(',');
+            }
+            
+            if (req.query.agegroup) {
+                filters.agegroup = Array.isArray(req.query.agegroup)
+                    ? req.query.agegroup
+                    : req.query.agegroup.split(',');
+            }
 
-  async deleteListing(req, res, next) {
-    const lang = getLanguage(req);
-    try {
-      const reqDetails = {
-          ipAddress: req.ip,
-          userAgent: req.headers['user-agent'],
-          actorUserId: req.user?.id
-      };
-      const deletedListing = await listingService.deleteListing(req.params.id, reqDetails);
-      if (!deletedListing) {
-        return res.status(404).json({ message: translate('listing_not_found', lang) });
-      }
-      res.status(200).json({ message: translate('listing_deleted', lang) });
-    } catch (error) {
-      next(error);
+            const listings = await listingService.getAllListings(filters, lang);
+            
+            res.json({
+                success: true,
+                message: 'Listings retrieved successfully',
+                data: listings,
+                count: listings.length
+            });
+        } catch (error) {
+            console.error('Error fetching listings:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    },
+
+    async getListingById(req, res) {
+        try {
+            const { id } = req.params;
+            const lang = req.query.lang || req.headers['accept-language'] || 'en';
+            
+            if (!id || isNaN(parseInt(id))) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid listing ID'
+                });
+            }
+
+            const listing = await listingService.getListingById(id, lang);
+            
+            if (!listing) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Listing not found'
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Listing retrieved successfully',
+                data: listing
+            });
+        } catch (error) {
+            console.error('Error fetching listing:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    },
+
+    async updateListing(req, res) {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return processValidationErrors(res, errors);
+            }
+
+            const { id } = req.params;
+            const lang = req.query.lang || req.headers['accept-language'] || 'en';
+            const files = req.files;
+            
+            if (!id || isNaN(parseInt(id))) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid listing ID'
+                });
+            }
+
+            // Extract request details for audit logging
+            const reqDetails = {
+                actorUserId: req.user?.id,
+                ipAddress: req.ip || req.connection.remoteAddress,
+                userAgent: req.get('User-Agent')
+            };
+
+            const updatedListing = await listingService.updateListing(id, req.body, files, lang, reqDetails);
+            
+            if (!updatedListing) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Listing not found'
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Listing updated successfully',
+                data: updatedListing
+            });
+        } catch (error) {
+            console.error('Error updating listing:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
+    },
+
+    async deleteListing(req, res) {
+        try {
+            const { id } = req.params;
+            
+            if (!id || isNaN(parseInt(id))) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid listing ID'
+                });
+            }
+
+            // Extract request details for audit logging
+            const reqDetails = {
+                actorUserId: req.user?.id,
+                ipAddress: req.ip || req.connection.remoteAddress,
+                userAgent: req.get('User-Agent')
+            };
+
+            const deletedListing = await listingService.deleteListing(id, reqDetails);
+            
+            if (!deletedListing) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Listing not found'
+                });
+            }
+
+            res.json({
+                success: true,
+                message: 'Listing deleted successfully',
+                data: deletedListing
+            });
+        } catch (error) {
+            console.error('Error deleting listing:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
     }
-  },
 };
 
 export default listingController;

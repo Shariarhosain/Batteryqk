@@ -12,10 +12,11 @@
   "login_failed_invalid_credentials": "Login failed. Invalid credentials.",
   "login_successful": "Login successful.",
   "no_data_to_update": "No data to update.",
-  "category_created": "Category '{{name}}' created successfully.",
-  "category_updated": "Category '{{name}}' updated successfully.",
+  "category_created": "Category created successfully.",
+  "category_updated": "Category updated successfully.",
   "category_deleted": "Category deleted successfully.",
   "category_not_found": "Category not found.",
+  "categories_fetched": "Categories fetched successfully.",
   "listing_created": "Listing '{{name}}' created successfully.",
   "listing_updated": "Listing '{{name}}' updated successfully.",
   "listing_deleted": "Listing deleted successfully.",
@@ -31,5 +32,7 @@
   "unauthorized_invalid_user": "User is unauthorized.",
   "unauthorized_no_token": "you are not authorized. No authentication token provided.",
   "unauthorized_invalid_token": "Authentication token is invalid.",
-  "email_body_account_deleted": "Hello {{name}},\n\nWe regret to inform you that your account has been successfully deleted. If you have any questions, please contact us."
+  "email_body_account_deleted": "Hello {{name}},\n\nWe regret to inform you that your account has been successfully deleted. If you have any questions, please contact us.",
+  "unauthorized_token_expired": "Authentication token has expired.",
+  "validation_error": "Validation error."
 }

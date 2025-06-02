@@ -1,0 +1,220 @@
+### Listing API Tests
+
+# Set base URL
+@baseURL = http://localhost:3000/api/listings
+
+### 1. Create Listing (English) - POST /listings
+POST {{baseURL}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Authorization: Bearer {{authToken}}
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="title"
+
+iPhone 14 Pro Max for Sale
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="description"
+
+Brand new iPhone 14 Pro Max, 256GB, Space Black. Still in original packaging.
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="price"
+
+1200
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="mainCategoryId"
+
+10
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="subCategoryId"
+
+10
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="specificItemId"
+
+32
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 2. Create Listing (Arabic) - POST /listings
+POST {{baseURL}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Authorization: Bearer {{authToken}}
+Accept-Language: ar
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="title"
+
+تيشيرت قطني للبيع
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="description"
+
+تيشيرت قطني عالي الجودة، مقاس كبير، لون أزرق، حالة ممتازة
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="price"
+
+25
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="mainCategoryId"
+
+9
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="subCategoryId"
+
+9
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="specificItemId"
+
+28
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 3. Get All Listings (English) - GET /listings
+GET {{baseURL}}
+Accept-Language: en
+
+### 4. Get All Listings (Arabic) - GET /listings
+GET {{baseURL}}
+Accept-Language: ar
+
+### 5. Get All Listings with Filters - GET /listings
+GET {{baseURL}}?minPrice=20&maxPrice=1500&mainCategoryIds=10&lang=en
+
+### 6. Get Listing by ID (English) - GET /listings/:id
+GET {{baseURL}}/1
+Accept-Language: en
+
+### 7. Get Listing by ID (Arabic) - GET /listings/:id
+GET {{baseURL}}/1
+Accept-Language: ar
+
+### 8. Update Listing (English) - PUT /listings/:id
+PUT {{baseURL}}/1
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Authorization: Bearer {{authToken}}
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="title"
+
+iPhone 14 Pro Max - Updated Price
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="price"
+
+1100
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="description"
+
+iPhone 14 Pro Max, 256GB, Space Black. Price reduced for quick sale!
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 9. Update Listing (Arabic) - PUT /listings/:id
+PUT {{baseURL}}/2
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+Accept-Language: ar
+
+{
+    "title": "تيشيرت قطني محدث",
+    "price": 20,
+    "description": "تيشيرت قطني عالي الجودة، سعر مخفض"
+}
+
+### 10. Delete Listing - DELETE /listings/:id
+DELETE {{baseURL}}/1
+Authorization: Bearer {{authToken}}
+
+### 11. Error Tests - Invalid ID
+GET {{baseURL}}/invalid-id
+
+### 12. Error Tests - Missing Required Fields
+POST {{baseURL}}
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+    "description": "Missing title and price"
+}
+
+### 13. Error Tests - Invalid Price
+POST {{baseURL}}
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+    "title": "Test Listing",
+    "description": "Test description",
+    "price": "invalid-price",
+    "mainCategoryId": 10
+}
+
+### 14. Error Tests - Invalid Category ID
+POST {{baseURL}}
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+    "title": "Test Listing",
+    "description": "Test description", 
+    "price": 100,
+    "mainCategoryId": "invalid-id"
+}
+
+### 15. Error Tests - Unauthorized Access
+POST {{baseURL}}
+Content-Type: application/json
+
+{
+    "title": "Unauthorized Test",
+    "description": "Should fail without auth",
+    "price": 100,
+    "mainCategoryId": 10
+}
+
+### 16. Get Non-existent Listing
+GET {{baseURL}}/99999
+
+### 17. Update Non-existent Listing
+PUT {{baseURL}}/99999
+Content-Type: application/json
+Authorization: Bearer {{authToken}}
+
+{
+    "title": "Should not update"
+}
+
+### 18. Delete Non-existent Listing
+DELETE {{baseURL}}/99999
+Authorization: Bearer {{authToken}}
+
+### 19. Test with Image Upload
+POST {{baseURL}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Authorization: Bearer {{authToken}}
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="title"
+
+Listing with Images
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="description"
+
+Testing image upload functionality
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="price"
+
+500
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="mainCategoryId"
+
+10
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="main_image"; filename="main.jpg"
+Content-Type: image/jpeg
+
+[Binary image data would go here]
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="sub_images"; filename="sub1.jpg"
+Content-Type: image/jpeg
+
+[Binary image data would go here]
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 20. Test Complex Filtering
+GET {{baseURL}}?minPrice=100&maxPrice=2000&mainCategoryIds=10&subCategoryIds=10&specificItemIds=32&lang=en
