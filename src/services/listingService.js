@@ -151,21 +151,31 @@ const listingService = {
         sub_images: subImageFilenames.map(filename => getFileUrl(filename)),
     };
 
+    // Helper function to ensure array format
+    const ensureArray = (value) => {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+            return value.split(',').map(item => item.trim()).filter(item => item.length > 0);
+        }
+        return [];
+    };
+
     // Translate text fields if input is Arabic
     if (lang === "ar" && deeplClient) {
         listingData.name = name ? await translateText(name, "EN-US", "AR") : null;
         listingData.description = description ? await translateText(description, "EN-US", "AR") : null;
-        listingData.agegroup = agegroup ? await translateArrayFields(agegroup, "EN-US", "AR") : [];
-        listingData.location = location ? await translateArrayFields(location, "EN-US", "AR") : [];
-        listingData.facilities = facilities ? await translateArrayFields(facilities, "EN-US", "AR") : [];
-        listingData.operatingHours = operatingHours ? await translateArrayFields(operatingHours, "EN-US", "AR") : [];
+        listingData.agegroup = agegroup ? await translateArrayFields(ensureArray(agegroup), "EN-US", "AR") : [];
+        listingData.location = location ? await translateArrayFields(ensureArray(location), "EN-US", "AR") : [];
+        listingData.facilities = facilities ? await translateArrayFields(ensureArray(facilities), "EN-US", "AR") : [];
+        listingData.operatingHours = operatingHours ? await translateArrayFields(ensureArray(operatingHours), "EN-US", "AR") : [];
     } else {
         listingData.name = name || null;
         listingData.description = description || null;
-        listingData.agegroup = agegroup || [];
-        listingData.location = location || [];
-        listingData.facilities = facilities || [];
-        listingData.operatingHours = operatingHours || [];
+        listingData.agegroup = ensureArray(agegroup);
+        listingData.location = ensureArray(location);
+        listingData.facilities = ensureArray(facilities);
+        listingData.operatingHours = ensureArray(operatingHours);
     }
 
     // Create listing
@@ -179,37 +189,46 @@ const listingService = {
     });
 
     // Connect categories if provided
-    if (mainCategoryIds && mainCategoryIds.length > 0) {
-        await prisma.listing.update({
-            where: { id: newListing.id },
-            data: {
-                selectedMainCategories: {
-                    connect: mainCategoryIds.map(id => ({ id: parseInt(id) }))
+    if (mainCategoryIds) {
+        const mainCategoryIdsArray = ensureArray(mainCategoryIds);
+        if (mainCategoryIdsArray.length > 0) {
+            await prisma.listing.update({
+                where: { id: newListing.id },
+                data: {
+                    selectedMainCategories: {
+                        connect: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
-    if (subCategoryIds && subCategoryIds.length > 0) {
-        await prisma.listing.update({
-            where: { id: newListing.id },
-            data: {
-                selectedSubCategories: {
-                    connect: subCategoryIds.map(id => ({ id: parseInt(id) }))
+    if (subCategoryIds) {
+        const subCategoryIdsArray = ensureArray(subCategoryIds);
+        if (subCategoryIdsArray.length > 0) {
+            await prisma.listing.update({
+                where: { id: newListing.id },
+                data: {
+                    selectedSubCategories: {
+                        connect: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
-    if (specificItemIds && specificItemIds.length > 0) {
-        await prisma.listing.update({
-            where: { id: newListing.id },
-            data: {
-                selectedSpecificItems: {
-                    connect: specificItemIds.map(id => ({ id: parseInt(id) }))
+    if (specificItemIds) {
+        const specificItemIdsArray = ensureArray(specificItemIds);
+        if (specificItemIdsArray.length > 0) {
+            await prisma.listing.update({
+                where: { id: newListing.id },
+                data: {
+                    selectedSpecificItems: {
+                        connect: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     // Get the complete listing with relations
@@ -362,7 +381,30 @@ async getAllListings(filters = {}, lang = "en") {
             include: {
                     selectedMainCategories: true,
                     selectedSubCategories: true,
-                    selectedSpecificItems: true
+                    selectedSpecificItems: true,
+                    reviews: {
+                            include: {
+                                    user: {
+                                            select: {
+                                                    id: true,
+                                                    fname: true,
+                                                    lname: true
+                                            }
+                                    }
+                            }
+                    },
+                    bookings: {
+                            include: {
+                                    user: {
+                                            select: {
+                                                    id: true,
+                                                    fname: true,
+                                                    lname: true,
+                                                    email: true
+                                            }
+                                    }
+                            }
+                    }
             },
             orderBy: { createdAt: 'desc' }
     });
@@ -372,14 +414,42 @@ async getAllListings(filters = {}, lang = "en") {
     // Translate to Arabic if needed
     if (lang === "ar" && deeplClient) {
             result = await Promise.all(
-                    listings.map(listing => translateListingFields(listing, "AR", "EN"))
+                    listings.map(async (listing) => {
+                            const translatedListing = await translateListingFields(listing, "AR", "EN");
+                            
+                            // Translate reviews
+                            if (listing.reviews && listing.reviews.length > 0) {
+                                translatedListing.reviews = await Promise.all(
+                                    listing.reviews.map(async (review) => ({
+                                        ...review,
+                                        comment: review.comment ? await translateText(review.comment, "AR", "EN") : review.comment
+                                    }))
+                                );
+                            } else {
+                                translatedListing.reviews = [];
+                            }
+                            
+                            // Translate bookings (additionalNote field)
+                            if (listing.bookings && listing.bookings.length > 0) {
+                                translatedListing.bookings = await Promise.all(
+                                    listing.bookings.map(async (booking) => ({
+                                        ...booking,
+                                        additionalNote: booking.additionalNote ? await translateText(booking.additionalNote, "AR", "EN") : booking.additionalNote
+                                    }))
+                                );
+                            } else {
+                                translatedListing.bookings = [];
+                            }
+                            
+                            return translatedListing;
+                    })
             );
 
             // Cache the Arabic results
             if (redisClient.isReady) {
                     try {
                             await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(result));
-                            console.log("Redis: AR Cache - Cached all listings");
+                            console.log("Redis: AR Cache - Cached all listings with translated reviews and bookings");
                     } catch (cacheError) {
                             console.error("Redis: AR Cache - Error caching listings ->", cacheError.message);
                     }
@@ -389,16 +459,23 @@ async getAllListings(filters = {}, lang = "en") {
     return result;
 },
 
-  async getListingById(id, lang = "en") {
+async getListingById(id, lang = "en") {
     const listingId = parseInt(id, 10);
+    const cacheKey = cacheKeys.listingAr(listingId);
 
     // Check Redis cache for Arabic
     if (lang === "ar" && redisClient.isReady) {
         try {
-            const cachedListing = await redisClient.get(cacheKeys.listingAr(listingId));
+            const cachedListing = await redisClient.get(cacheKey);
             if (cachedListing) {
-                console.log(`Redis: AR Cache - Fetched listing ${listingId} from cache`);
-                return JSON.parse(cachedListing);
+                const parsedListing = JSON.parse(cachedListing);
+                // Check if reviews and bookings are available, if not skip returning cached version
+                if (!parsedListing.reviews || !parsedListing.bookings) {
+                    console.log(`Redis: AR Cache - Listing ${listingId} missing reviews/bookings, skipping cache`);
+                } else {
+                    console.log(`Redis: AR Cache - Fetched listing ${listingId} from cache`);
+                    return parsedListing;
+                }
             }
         } catch (cacheError) {
             console.error(`Redis: AR Cache - Error fetching listing ${listingId} ->`, cacheError.message);
@@ -410,214 +487,279 @@ async getAllListings(filters = {}, lang = "en") {
         include: {
             selectedMainCategories: true,
             selectedSubCategories: true,
-            selectedSpecificItems: true
+            selectedSpecificItems: true,
+            reviews: {
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            fname: true,
+                            lname: true
+                        }
+                    }
+                }
+            },
+            bookings: {
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            fname: true,
+                            lname: true,
+                            email: true
+                        }
+                    }
+                }
+            }
         }
     });
 
     if (!listing) return null;
 
-    // Translate and cache if Arabic
+    let result = listing;
+
+    // Translate to Arabic if needed
     if (lang === "ar" && deeplClient) {
-        const translatedListing = await translateListingFields(listing, "AR", "EN");
+        result = await translateListingFields(listing, "AR", "EN");
         
+        // Translate reviews
+        if (listing.reviews && listing.reviews.length > 0) {
+            result.reviews = await Promise.all(
+                listing.reviews.map(async (review) => ({
+                    ...review,
+                    comment: review.comment ? await translateText(review.comment, "AR", "EN") : review.comment
+                }))
+            );
+        } else {
+            result.reviews = [];
+        }
+        
+        // Translate bookings (additionalNote field)
+        if (listing.bookings && listing.bookings.length > 0) {
+            result.bookings = await Promise.all(
+                listing.bookings.map(async (booking) => ({
+                    ...booking,
+                    additionalNote: booking.additionalNote ? await translateText(booking.additionalNote, "AR", "EN") : booking.additionalNote
+                }))
+            );
+        } else {
+            result.bookings = [];
+        }
+        
+        // Cache the Arabic results
         if (redisClient.isReady) {
             try {
-                await redisClient.setEx(
-                    cacheKeys.listingAr(listingId),
-                    AR_CACHE_EXPIRATION,
-                    JSON.stringify(translatedListing)
-                );
-                console.log(`Redis: AR Cache - Cached listing ${listingId}`);
+                await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(result));
+                console.log(`Redis: AR Cache - Cached listing ${listingId} with translated reviews and bookings`);
             } catch (cacheError) {
                 console.error(`Redis: AR Cache - Error caching listing ${listingId} ->`, cacheError.message);
             }
         }
-
-        return translatedListing;
     }
 
-    return listing;
-  },
+    return result;
+},
 
-  async updateListing(id, data, files, lang = "en", reqDetails = {}) {
+async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     const listingId = parseInt(id, 10);
     const currentListing = await prisma.listing.findUnique({ 
-        where: { id: listingId },
-        include: {
-            selectedMainCategories: true,
-            selectedSubCategories: true,
-            selectedSpecificItems: true
-        }
+            where: { id: listingId },
+            include: {
+                    selectedMainCategories: true,
+                    selectedSubCategories: true,
+                    selectedSpecificItems: true
+            }
     });
     
     if (!currentListing) return null;
 
     const { name, price, description, agegroup, location, facilities, operatingHours, 
-            mainCategoryIds, subCategoryIds, specificItemIds, removed_sub_images } = data;
+                    mainCategoryIds, subCategoryIds, specificItemIds, removed_sub_images } = data;
     
     let originalData = { ...data };
     let updateData = {};
 
+    // Helper function to ensure array format
+    const ensureArray = (value) => {
+            if (!value) return [];
+            if (Array.isArray(value)) return value;
+            if (typeof value === 'string') {
+                    return value.split(',').map(item => item.trim()).filter(item => item.length > 0);
+            }
+            return [];
+    };
+
     // Handle price
     if (price !== undefined) updateData.price = parseFloat(price);
 
-    // Handle images
-    let newMainImageFilename = currentListing.main_image ? 
-        path.basename(new URL(currentListing.main_image).pathname) : null;
-    let currentSubImageFilenames = currentListing.sub_images.map(url => 
-        path.basename(new URL(url).pathname));
-
+    // Handle main image - delete previous if new one is uploaded
     if (files && files.main_image && files.main_image[0]) {
-        if (currentListing.main_image) {
-            const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
-            deleteFile(oldMainImageFilename);
-        }
-        newMainImageFilename = files.main_image[0].filename;
-        updateData.main_image = getFileUrl(newMainImageFilename);
-    }
-
-    // Handle sub-images
-    let finalSubImageFilenames = [...currentSubImageFilenames];
-    if (removed_sub_images) {
-        const imagesToRemove = Array.isArray(removed_sub_images) ? removed_sub_images : [removed_sub_images];
-        imagesToRemove.forEach(imgUrlToRemove => {
-            const filenameToRemove = path.basename(new URL(imgUrlToRemove).pathname);
-            if (deleteFile(filenameToRemove)) {
-                finalSubImageFilenames = finalSubImageFilenames.filter(fn => fn !== filenameToRemove);
+            // Delete previous main image if exists
+            if (currentListing.main_image) {
+                    const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
+                    deleteFile(oldMainImageFilename);
             }
-        });
+            // Set new main image
+            const newMainImageFilename = files.main_image[0].filename;
+            updateData.main_image = getFileUrl(newMainImageFilename);
     }
 
+    // Handle sub-images - delete all previous if new ones are uploaded
     if (files && files.sub_images && files.sub_images.length > 0) {
-        const newUploadedSubImageFilenames = files.sub_images.map(file => file.filename);
-        finalSubImageFilenames.push(...newUploadedSubImageFilenames);
+            // Delete all previous sub images
+            if (currentListing.sub_images && currentListing.sub_images.length > 0) {
+                    currentListing.sub_images.forEach(imageUrl => {
+                            const filenameToDelete = path.basename(new URL(imageUrl).pathname);
+                            deleteFile(filenameToDelete);
+                    });
+            }
+            // Set new sub images
+            const newSubImageFilenames = files.sub_images.map(file => file.filename);
+            updateData.sub_images = newSubImageFilenames.map(filename => getFileUrl(filename));
+    } else if (removed_sub_images) {
+            // Handle individual sub-image removals if no new sub-images uploaded
+            const currentSubImageFilenames = currentListing.sub_images.map(url => 
+                    path.basename(new URL(url).pathname));
+            let finalSubImageFilenames = [...currentSubImageFilenames];
+            
+            const imagesToRemove = Array.isArray(removed_sub_images) ? removed_sub_images : [removed_sub_images];
+            imagesToRemove.forEach(imgUrlToRemove => {
+                    const filenameToRemove = path.basename(new URL(imgUrlToRemove).pathname);
+                    if (deleteFile(filenameToRemove)) {
+                            finalSubImageFilenames = finalSubImageFilenames.filter(fn => fn !== filenameToRemove);
+                    }
+            });
+            
+            updateData.sub_images = finalSubImageFilenames.map(filename => getFileUrl(filename));
     }
-    updateData.sub_images = finalSubImageFilenames.map(filename => getFileUrl(filename));
 
     // Handle text fields with translation
     if (lang === "ar" && deeplClient) {
-        if (name !== undefined) updateData.name = await translateText(name, "EN-US", "AR");
-        if (description !== undefined) updateData.description = await translateText(description, "EN-US", "AR");
-        if (agegroup !== undefined) updateData.agegroup = await translateArrayFields(agegroup, "EN-US", "AR");
-        if (location !== undefined) updateData.location = await translateArrayFields(location, "EN-US", "AR");
-        if (facilities !== undefined) updateData.facilities = await translateArrayFields(facilities, "EN-US", "AR");
-        if (operatingHours !== undefined) updateData.operatingHours = await translateArrayFields(operatingHours, "EN-US", "AR");
+            if (name !== undefined) updateData.name = await translateText(name, "EN-US", "AR");
+            if (description !== undefined) updateData.description = await translateText(description, "EN-US", "AR");
+            if (agegroup !== undefined) updateData.agegroup = await translateArrayFields(ensureArray(agegroup), "EN-US", "AR");
+            if (location !== undefined) updateData.location = await translateArrayFields(ensureArray(location), "EN-US", "AR");
+            if (facilities !== undefined) updateData.facilities = await translateArrayFields(ensureArray(facilities), "EN-US", "AR");
+            if (operatingHours !== undefined) updateData.operatingHours = await translateArrayFields(ensureArray(operatingHours), "EN-US", "AR");
     } else {
-        if (name !== undefined) updateData.name = name;
-        if (description !== undefined) updateData.description = description;
-        if (agegroup !== undefined) updateData.agegroup = agegroup;
-        if (location !== undefined) updateData.location = location;
-        if (facilities !== undefined) updateData.facilities = facilities;
-        if (operatingHours !== undefined) updateData.operatingHours = operatingHours;
+            if (name !== undefined) updateData.name = name;
+            if (description !== undefined) updateData.description = description;
+            if (agegroup !== undefined) updateData.agegroup = ensureArray(agegroup);
+            if (location !== undefined) updateData.location = ensureArray(location);
+            if (facilities !== undefined) updateData.facilities = ensureArray(facilities);
+            if (operatingHours !== undefined) updateData.operatingHours = ensureArray(operatingHours);
     }
 
     // Update listing
     const updatedListing = await prisma.listing.update({
-        where: { id: listingId },
-        data: updateData,
-        include: {
-            selectedMainCategories: true,
-            selectedSubCategories: true,
-            selectedSpecificItems: true
-        }
+            where: { id: listingId },
+            data: updateData,
+            include: {
+                    selectedMainCategories: true,
+                    selectedSubCategories: true,
+                    selectedSpecificItems: true
+            }
     });
 
     // Handle category connections
     if (mainCategoryIds !== undefined) {
-        await prisma.listing.update({
-            where: { id: listingId },
-            data: {
-                selectedMainCategories: {
-                    set: mainCategoryIds.map(id => ({ id: parseInt(id) }))
-                }
-            }
-        });
+            const mainCategoryIdsArray = ensureArray(mainCategoryIds);
+            await prisma.listing.update({
+                    where: { id: listingId },
+                    data: {
+                            selectedMainCategories: {
+                                    set: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                            }
+                    }
+            });
     }
 
     if (subCategoryIds !== undefined) {
-        await prisma.listing.update({
-            where: { id: listingId },
-            data: {
-                selectedSubCategories: {
-                    set: subCategoryIds.map(id => ({ id: parseInt(id) }))
-                }
-            }
-        });
+            const subCategoryIdsArray = ensureArray(subCategoryIds);
+            await prisma.listing.update({
+                    where: { id: listingId },
+                    data: {
+                            selectedSubCategories: {
+                                    set: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                            }
+                    }
+            });
     }
 
     if (specificItemIds !== undefined) {
-        await prisma.listing.update({
-            where: { id: listingId },
-            data: {
-                selectedSpecificItems: {
-                    set: specificItemIds.map(id => ({ id: parseInt(id) }))
-                }
-            }
-        });
+            const specificItemIdsArray = ensureArray(specificItemIds);
+            await prisma.listing.update({
+                    where: { id: listingId },
+                    data: {
+                            selectedSpecificItems: {
+                                    set: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
+                            }
+                    }
+            });
     }
 
     // Get final updated listing
     const finalListing = await prisma.listing.findUnique({
-        where: { id: listingId },
-        include: {
-            selectedMainCategories: true,
-            selectedSubCategories: true,
-            selectedSpecificItems: true
-        }
+            where: { id: listingId },
+            include: {
+                    selectedMainCategories: true,
+                    selectedSubCategories: true,
+                    selectedSpecificItems: true
+            }
     });
 
     // Update Redis cache
     if (redisClient.isReady) {
-        try {
-            // Clear relevant caches
-            await redisClient.del(cacheKeys.listingAr(listingId));
-            
-            // Clear all listings cache (could be more granular)
-            const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
-            if (keys.length > 0) {
-                await redisClient.del(keys);
-            }
-
-            // Cache updated Arabic version
-            let arListing;
-            if (lang === "ar") {
-                arListing = { ...finalListing };
-                Object.keys(originalData).forEach(key => {
-                    if (['name', 'description', 'agegroup', 'location', 'facilities', 'operatingHours'].includes(key)) {
-                        arListing[key] = originalData[key];
+            try {
+                    // Clear relevant caches
+                    await redisClient.del(cacheKeys.listingAr(listingId));
+                    
+                    // Clear all listings cache (could be more granular)
+                    const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
+                    if (keys.length > 0) {
+                            await redisClient.del(keys);
                     }
-                });
-            } else if (deeplClient) {
-                arListing = await translateListingFields(finalListing, "AR", "EN");
-            }
 
-            if (arListing) {
-                await redisClient.setEx(
-                    cacheKeys.listingAr(listingId),
-                    AR_CACHE_EXPIRATION,
-                    JSON.stringify(arListing)
-                );
+                    // Cache updated Arabic version
+                    let arListing;
+                    if (lang === "ar") {
+                            arListing = { ...finalListing };
+                            Object.keys(originalData).forEach(key => {
+                                    if (['name', 'description', 'agegroup', 'location', 'facilities', 'operatingHours'].includes(key)) {
+                                            arListing[key] = originalData[key];
+                                    }
+                            });
+                    } else if (deeplClient) {
+                            arListing = await translateListingFields(finalListing, "AR", "EN");
+                    }
+
+                    if (arListing) {
+                            await redisClient.setEx(
+                                    cacheKeys.listingAr(listingId),
+                                    AR_CACHE_EXPIRATION,
+                                    JSON.stringify(arListing)
+                            );
+                    }
+                    
+                    console.log(`Redis: AR Cache - Updated listing ${listingId} cache`);
+            } catch (cacheError) {
+                    console.error(`Redis: AR Cache - Error updating listing ${listingId} ->`, cacheError.message);
             }
-            
-            console.log(`Redis: AR Cache - Updated listing ${listingId} cache`);
-        } catch (cacheError) {
-            console.error(`Redis: AR Cache - Error updating listing ${listingId} ->`, cacheError.message);
-        }
     }
 
     recordAuditLog(AuditLogAction.LISTING_UPDATED, {
-        userId: reqDetails.actorUserId,
-        entityName: 'Listing',
-        entityId: finalListing.id,
-        oldValues: currentListing,
-        newValues: finalListing,
-        description: `Listing '${finalListing.name || finalListing.id}' updated.`,
-        ipAddress: reqDetails.ipAddress,
-        userAgent: reqDetails.userAgent,
+            userId: reqDetails.actorUserId,
+            entityName: 'Listing',
+            entityId: finalListing.id,
+            oldValues: currentListing,
+            newValues: finalListing,
+            description: `Listing '${finalListing.name || finalListing.id}' updated.`,
+            ipAddress: reqDetails.ipAddress,
+            userAgent: reqDetails.userAgent,
     });
 
     return finalListing;
-  },
+},
 
   async deleteListing(id, reqDetails = {}) {
     const listingId = parseInt(id, 10);

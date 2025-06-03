@@ -26,14 +26,14 @@ const listingController = {
             
             res.status(201).json({
                 success: true,
-                message: 'Listing created successfully',
+                message: translate('listing_created', getLanguage(req)),
                 data: listing
             });
         } catch (error) {
             console.error('Error creating listing:', error);
             res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: translate('internal_server_error', getLanguage(req)),
                 error: process.env.NODE_ENV === 'development' ? error.message : undefined
             });
         }
@@ -90,11 +90,13 @@ const listingController = {
                     : req.query.agegroup.split(',');
             }
 
+
+
             const listings = await listingService.getAllListings(filters, lang);
             
             res.json({
                 success: true,
-                message: 'Listings retrieved successfully',
+                message: translate('listings_retrieved', getLanguage(req)),
                 data: listings,
                 count: listings.length
             });
@@ -102,7 +104,7 @@ const listingController = {
             console.error('Error fetching listings:', error);
             res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: translate('internal_server_error', getLanguage(req)),
                 error: process.env.NODE_ENV === 'development' ? error.message : undefined
             });
         }
@@ -112,11 +114,12 @@ const listingController = {
         try {
             const { id } = req.params;
             const lang = req.query.lang || req.headers['accept-language'] || 'en';
-            
+            const files = req.files;
+
             if (!id || isNaN(parseInt(id))) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Invalid listing ID'
+                    message: translate('invalid_listing_id', getLanguage(req))
                 });
             }
 
@@ -125,20 +128,20 @@ const listingController = {
             if (!listing) {
                 return res.status(404).json({
                     success: false,
-                    message: 'Listing not found'
+                    message: translate('listing_not_found', getLanguage(req))
                 });
             }
 
             res.json({
                 success: true,
-                message: 'Listing retrieved successfully',
+                message: translate('listing_retrieved', getLanguage(req)),
                 data: listing
             });
         } catch (error) {
             console.error('Error fetching listing:', error);
             res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: translate('internal_server_error', getLanguage(req)),
                 error: process.env.NODE_ENV === 'development' ? error.message : undefined
             });
         }
@@ -158,7 +161,7 @@ const listingController = {
             if (!id || isNaN(parseInt(id))) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Invalid listing ID'
+                    message: translate('invalid_listing_id', getLanguage(req))
                 });
             }
 
@@ -174,20 +177,20 @@ const listingController = {
             if (!updatedListing) {
                 return res.status(404).json({
                     success: false,
-                    message: 'Listing not found'
+                    message: translate('listing_not_found', getLanguage(req))
                 });
             }
 
             res.json({
                 success: true,
-                message: 'Listing updated successfully',
+                message: translate('listing_updated', getLanguage(req)),
                 data: updatedListing
             });
         } catch (error) {
             console.error('Error updating listing:', error);
             res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: translate('internal_server_error', getLanguage(req)),
                 error: process.env.NODE_ENV === 'development' ? error.message : undefined
             });
         }
@@ -200,7 +203,7 @@ const listingController = {
             if (!id || isNaN(parseInt(id))) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Invalid listing ID'
+                    message: translate('invalid_listing_id', getLanguage(req))
                 });
             }
 
@@ -216,20 +219,20 @@ const listingController = {
             if (!deletedListing) {
                 return res.status(404).json({
                     success: false,
-                    message: 'Listing not found'
+                    message: translate('error_listing_not_found', getLanguage(req))
                 });
             }
 
             res.json({
                 success: true,
-                message: 'Listing deleted successfully',
+                message: translate('listing_deleted', getLanguage(req)),
                 data: deletedListing
             });
         } catch (error) {
             console.error('Error deleting listing:', error);
             res.status(500).json({
                 success: false,
-                message: 'Internal server error',
+                message: translate('internal_server_error', getLanguage(req)),
                 error: process.env.NODE_ENV === 'development' ? error.message : undefined
             });
         }

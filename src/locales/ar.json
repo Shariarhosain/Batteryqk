@@ -37,6 +37,11 @@
   "unauthorized_invalid_token": "رمز المصادقة غير صالح.",
   "unauthorized_token_expired": "انتهت صلاحية رمز المصادقة.",
   "unauthorized_no_permission": "ليس لديك الإذن للقيام بذلك.",
-  "validation_error": "خطأ في التحقق من صحة البيانات."
+  "validation_error": "خطأ في التحقق من صحة البيانات.",
+  "internal_server_error": "خطأ داخلي في الخادم.",
+  "listings_retrieved": "تم استرجاع القوائم بنجاح.",
+  "invalid_listing_id": "معرف القائمة غير صالح.",
+  "error_listing_not_found": "القائمة غير موجودة.",
+  "listing_retrieved": "تم استرجاع القائمة بنجاح."
 
 }

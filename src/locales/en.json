@@ -34,5 +34,10 @@
   "unauthorized_invalid_token": "Authentication token is invalid.",
   "email_body_account_deleted": "Hello {{name}},\n\nWe regret to inform you that your account has been successfully deleted. If you have any questions, please contact us.",
   "unauthorized_token_expired": "Authentication token has expired.",
-  "validation_error": "Validation error."
+  "validation_error": "Validation error.",
+  "internal_server_error": "Internal server error.",
+  "listings_retrieved": "Listings retrieved successfully.",
+  "invalid_listing_id": "Invalid listing ID.",
+  "error_listing_not_found": "Listing not found.",
+  "listing_retrieved": "Listing retrieved successfully."
 }
