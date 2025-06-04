@@ -241,36 +241,36 @@ const listingService = {
         }
     });
 
-    // Cache Arabic version if needed
-    if (redisClient.isReady) {
-        try {
-            let arListing;
-            if (lang === "ar") {
-                // Original input was Arabic - use original data with IDs
-                arListing = {
-                    ...completeListing,
-                    name: originalData.name,
-                    description: originalData.description,
-                    agegroup: originalData.agegroup || [],
-                    location: originalData.location || [],
-                    facilities: originalData.facilities || [],
-                    operatingHours: originalData.operatingHours || []
-                };
-            } else {
-                // Original input was English - translate to Arabic
-                arListing = await translateListingFields(completeListing, "AR", "EN");
-            }
+    // // Cache Arabic version if needed
+    // if (redisClient.isReady) {
+    //     try {
+    //         let arListing;
+    //         if (lang === "ar") {
+    //             // Original input was Arabic - use original data with IDs
+    //             arListing = {
+    //                 ...completeListing,
+    //                 name: originalData.name,
+    //                 description: originalData.description,
+    //                 agegroup: originalData.agegroup || [],
+    //                 location: originalData.location || [],
+    //                 facilities: originalData.facilities || [],
+    //                 operatingHours: originalData.operatingHours || []
+    //             };
+    //         } else {
+    //             // Original input was English - translate to Arabic
+    //             arListing = await translateListingFields(completeListing, "AR", "EN");
+    //         }
 
-            await redisClient.setEx(
-                cacheKeys.listingAr(newListing.id),
-                AR_CACHE_EXPIRATION,
-                JSON.stringify(arListing)
-            );
-            console.log(`Redis: AR Cache - Cached new listing ${newListing.id}`);
-        } catch (cacheError) {
-            console.error("Redis: AR Cache - Listing caching error ->", cacheError.message);
-        }
-    }
+    //         await redisClient.setEx(
+    //             cacheKeys.listingAr(newListing.id),
+    //             AR_CACHE_EXPIRATION,
+    //             JSON.stringify(arListing)
+    //         );
+    //         console.log(`Redis: AR Cache - Cached new listing ${newListing.id}`);
+    //     } catch (cacheError) {
+    //         console.error("Redis: AR Cache - Listing caching error ->", cacheError.message);
+    //     }
+    // }
 
     recordAuditLog(AuditLogAction.LISTING_CREATED, {
         userId: reqDetails.actorUserId,
@@ -298,22 +298,12 @@ const listingService = {
     return completeListing;
   },
 
+
 async getAllListings(filters = {}, lang = "en") {
     const filterHash = createFilterHash(filters);
     const cacheKey = cacheKeys.allListingsAr(filterHash);
 
-    // Check Redis cache for Arabic
-    if (lang === "ar" && redisClient.isReady) {
-            try {
-                    const cachedListings = await redisClient.get(cacheKey);
-                    if (cachedListings) {
-                            console.log("Redis: AR Cache - Fetched all listings from cache");
-                            return JSON.parse(cachedListings);
-                    }
-            } catch (cacheError) {
-                    console.error("Redis: AR Cache - Error fetching listings ->", cacheError.message);
-            }
-    }
+ 
 
     // Build where clause for filtering
     let whereClause = { isActive: true };
@@ -445,15 +435,7 @@ async getAllListings(filters = {}, lang = "en") {
                     })
             );
 
-            // Cache the Arabic results
-            if (redisClient.isReady) {
-                    try {
-                            await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(result));
-                            console.log("Redis: AR Cache - Cached all listings with translated reviews and bookings");
-                    } catch (cacheError) {
-                            console.error("Redis: AR Cache - Error caching listings ->", cacheError.message);
-                    }
-            }
+         
     }
 
     return result;
@@ -463,24 +445,7 @@ async getListingById(id, lang = "en") {
     const listingId = parseInt(id, 10);
     const cacheKey = cacheKeys.listingAr(listingId);
 
-    // Check Redis cache for Arabic
-    if (lang === "ar" && redisClient.isReady) {
-        try {
-            const cachedListing = await redisClient.get(cacheKey);
-            if (cachedListing) {
-                const parsedListing = JSON.parse(cachedListing);
-                // Check if reviews and bookings are available, if not skip returning cached version
-                if (!parsedListing.reviews || !parsedListing.bookings) {
-                    console.log(`Redis: AR Cache - Listing ${listingId} missing reviews/bookings, skipping cache`);
-                } else {
-                    console.log(`Redis: AR Cache - Fetched listing ${listingId} from cache`);
-                    return parsedListing;
-                }
-            }
-        } catch (cacheError) {
-            console.error(`Redis: AR Cache - Error fetching listing ${listingId} ->`, cacheError.message);
-        }
-    }
+    
 
     const listing = await prisma.listing.findUnique({ 
         where: { id: listingId },
@@ -546,15 +511,7 @@ async getListingById(id, lang = "en") {
             result.bookings = [];
         }
         
-        // Cache the Arabic results
-        if (redisClient.isReady) {
-            try {
-                await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(result));
-                console.log(`Redis: AR Cache - Cached listing ${listingId} with translated reviews and bookings`);
-            } catch (cacheError) {
-                console.error(`Redis: AR Cache - Error caching listing ${listingId} ->`, cacheError.message);
-            }
-        }
+       
     }
 
     return result;
@@ -651,7 +608,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     }
 
     // Update listing
-    const updatedListing = await prisma.listing.update({
+   await prisma.listing.update({
             where: { id: listingId },
             data: updateData,
             include: {
@@ -708,44 +665,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
             }
     });
 
-    // Update Redis cache
-    if (redisClient.isReady) {
-            try {
-                    // Clear relevant caches
-                    await redisClient.del(cacheKeys.listingAr(listingId));
-                    
-                    // Clear all listings cache (could be more granular)
-                    const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
-                    if (keys.length > 0) {
-                            await redisClient.del(keys);
-                    }
-
-                    // Cache updated Arabic version
-                    let arListing;
-                    if (lang === "ar") {
-                            arListing = { ...finalListing };
-                            Object.keys(originalData).forEach(key => {
-                                    if (['name', 'description', 'agegroup', 'location', 'facilities', 'operatingHours'].includes(key)) {
-                                            arListing[key] = originalData[key];
-                                    }
-                            });
-                    } else if (deeplClient) {
-                            arListing = await translateListingFields(finalListing, "AR", "EN");
-                    }
-
-                    if (arListing) {
-                            await redisClient.setEx(
-                                    cacheKeys.listingAr(listingId),
-                                    AR_CACHE_EXPIRATION,
-                                    JSON.stringify(arListing)
-                            );
-                    }
-                    
-                    console.log(`Redis: AR Cache - Updated listing ${listingId} cache`);
-            } catch (cacheError) {
-                    console.error(`Redis: AR Cache - Error updating listing ${listingId} ->`, cacheError.message);
-            }
-    }
+ 
 
     recordAuditLog(AuditLogAction.LISTING_UPDATED, {
             userId: reqDetails.actorUserId,
@@ -778,22 +698,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     
     const deletedListing = await prisma.listing.delete({ where: { id: listingId } });
 
-    // Clear Redis cache
-    if (redisClient.isReady) {
-        try {
-            await redisClient.del(cacheKeys.listingAr(listingId));
-            
-            // Clear all listings cache
-            const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
-            if (keys.length > 0) {
-                await redisClient.del(keys);
-            }
-            
-            console.log(`Redis: AR Cache - Deleted listing ${listingId} from cache`);
-        } catch (cacheError) {
-            console.error(`Redis: AR Cache - Error deleting listing ${listingId} ->`, cacheError.message);
-        }
-    }
+   
 
     recordAuditLog(AuditLogAction.LISTING_DELETED, {
         userId: reqDetails.actorUserId,

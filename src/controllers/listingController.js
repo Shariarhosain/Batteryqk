@@ -26,7 +26,7 @@ const listingController = {
             
             res.status(201).json({
                 success: true,
-                message: translate('listing_created', getLanguage(req)),
+                message: translate('listing_created', getLanguage(req), { name: listing.name || listing.id }),
                 data: listing
             });
         } catch (error) {
@@ -183,7 +183,7 @@ const listingController = {
 
             res.json({
                 success: true,
-                message: translate('listing_updated', getLanguage(req)),
+                message: translate('listing_updated', getLanguage(req), { name: updatedListing.name || updatedListing.id }),
                 data: updatedListing
             });
         } catch (error) {
@@ -225,7 +225,7 @@ const listingController = {
 
             res.json({
                 success: true,
-                message: translate('listing_deleted', getLanguage(req)),
+                message: translate('listing_deleted', getLanguage(req), { name: deletedListing.name || deletedListing.id }),
                 data: deletedListing
             });
         } catch (error) {
