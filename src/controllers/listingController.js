@@ -45,7 +45,17 @@ const listingController = {
             
             // Extract filters from query parameters
             const filters = {};
-            
+            if (req.query.search) {
+                filters.search = req.query.search;
+            }
+
+            if (req.query.page) {
+                filters.page = req.query.page;
+            }
+            if (req.query.limit) {
+                filters.limit = req.query.limit;    
+            }
+
             if (req.query.mainCategoryIds) {
                 filters.mainCategoryIds = Array.isArray(req.query.mainCategoryIds) 
                     ? req.query.mainCategoryIds 
@@ -66,6 +76,11 @@ const listingController = {
             
             if (req.query.minPrice) {
                 filters.minPrice = req.query.minPrice;
+            }
+
+            if(req.query.price){
+                filters.price = req.query.price;
+                console.log(filters.price);
             }
             
             if (req.query.maxPrice) {
@@ -88,9 +103,11 @@ const listingController = {
                 filters.agegroup = Array.isArray(req.query.agegroup)
                     ? req.query.agegroup
                     : req.query.agegroup.split(',');
+                    console.log(filters.agegroup);
             }
-
-
+            if (req.query.rating) {
+                filters.rating = req.query.rating;
+            }
 
             const listings = await listingService.getAllListings(filters, lang);
             

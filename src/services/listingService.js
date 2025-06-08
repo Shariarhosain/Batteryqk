@@ -1,3 +1,4 @@
+
 import prisma from '../utils/prismaClient.js';
 import { recordAuditLog } from '../utils/auditLogHandler.js';
 import { AuditLogAction } from '@prisma/client';
@@ -5,6 +6,7 @@ import { getFileUrl, deleteFile } from '../middlewares/multer.js';
 import path from 'path';
 import { createClient } from "redis";
 import * as deepl from "deepl-node";
+import { sendMail } from '../utils/mailer.js';
 
 // --- DeepL Configuration ---
 const DEEPL_AUTH_KEY = process.env.DEEPL_AUTH_KEY || "YOUR_DEEPL_AUTH_KEY_HERE";
@@ -126,15 +128,16 @@ function createFilterHash(filters) {
 }
 
 const listingService = {
-  async createListing(data, files, lang = "en", reqDetails = {}) {
-    const { name, price, description, agegroup, location, facilities, operatingHours, 
-            mainCategoryIds, subCategoryIds, specificItemIds } = data;
-    
-    let originalData = { ...data };
+
+async  createListing(data, files, lang = "en", reqDetails = {}) {
+    const { 
+        name, price, description, agegroup, location, facilities, operatingHours, 
+        mainCategoryIds, subCategoryIds, specificItemIds 
+    } = data;
+
+    // --- 1. Handle File Uploads ---
     let mainImageFilename = null;
     let subImageFilenames = [];
-
-    // Handle file uploads (images don't get translated)
     if (files) {
         if (files.main_image && files.main_image[0]) {
             mainImageFilename = files.main_image[0].filename;
@@ -144,309 +147,804 @@ const listingService = {
         }
     }
 
-    // Prepare data for database (always store in English)
-    let listingData = {
+    // --- 2. Prepare Data for Database (including translations) ---
+    // This object will hold the data to be inserted into the database.
+    const listingDataForDb = {
         price: price ? parseFloat(price) : null,
         main_image: mainImageFilename ? getFileUrl(mainImageFilename) : null,
         sub_images: subImageFilenames.map(filename => getFileUrl(filename)),
+        // userId: reqDetails.actorUserId || null, // Removed - field doesn't exist in schema
     };
 
-    // Helper function to ensure array format
-    const ensureArray = (value) => {
-        if (!value) return [];
-        if (Array.isArray(value)) return value;
-        if (typeof value === 'string') {
-            return value.split(',').map(item => item.trim()).filter(item => item.length > 0);
-        }
-        return [];
-    };
-
-    // Translate text fields if input is Arabic
+    // Translate text fields if the input language is Arabic
     if (lang === "ar" && deeplClient) {
-        listingData.name = name ? await translateText(name, "EN-US", "AR") : null;
-        listingData.description = description ? await translateText(description, "EN-US", "AR") : null;
-        listingData.agegroup = agegroup ? await translateArrayFields(ensureArray(agegroup), "EN-US", "AR") : [];
-        listingData.location = location ? await translateArrayFields(ensureArray(location), "EN-US", "AR") : [];
-        listingData.facilities = facilities ? await translateArrayFields(ensureArray(facilities), "EN-US", "AR") : [];
-        listingData.operatingHours = operatingHours ? await translateArrayFields(ensureArray(operatingHours), "EN-US", "AR") : [];
+        // Await all translations together for better performance
+        [
+            listingDataForDb.name,
+            listingDataForDb.description,
+            listingDataForDb.agegroup,
+            listingDataForDb.location,
+            listingDataForDb.facilities,
+            listingDataForDb.operatingHours,
+        ] = await Promise.all([
+            name ? translateText(name, "EN-US", "AR") : null,
+            description ? translateText(description, "EN-US", "AR") : null,
+            agegroup ? translateArrayFields(Array.isArray(agegroup) ? agegroup : [agegroup], "EN-US", "AR") : [],
+            location ? translateArrayFields(Array.isArray(location) ? location : [location], "EN-US", "AR") : [],
+            facilities ? translateArrayFields(Array.isArray(facilities) ? facilities : [facilities], "EN-US", "AR") : [],
+            operatingHours ? translateArrayFields(Array.isArray(operatingHours) ? operatingHours : [operatingHours], "EN-US", "AR") : [],
+        ]);
     } else {
-        listingData.name = name || null;
-        listingData.description = description || null;
-        listingData.agegroup = ensureArray(agegroup);
-        listingData.location = ensureArray(location);
-        listingData.facilities = ensureArray(facilities);
-        listingData.operatingHours = ensureArray(operatingHours);
+        // Assign values directly for English or if translation client is unavailable
+        listingDataForDb.name = name || null;
+        listingDataForDb.description = description || null;
+        listingDataForDb.agegroup = agegroup ? (Array.isArray(agegroup) ? agegroup : [agegroup]) : [];
+        listingDataForDb.location = location ? (Array.isArray(location) ? location : [location]) : [];
+        listingDataForDb.facilities = facilities ? (Array.isArray(facilities) ? facilities : [facilities]) : [];
+        listingDataForDb.operatingHours = operatingHours ? (Array.isArray(operatingHours) ? operatingHours : [operatingHours]) : [];
     }
+    
+    // --- 3. Connect Category Relationships ---
+    // It's more efficient to connect relationships directly in the 'create' operation
+    // rather than creating and then updating.
+    const mainCategoryIdsArray = Array.isArray(mainCategoryIds) ? mainCategoryIds : (mainCategoryIds ? [mainCategoryIds] : []);
+    const subCategoryIdsArray = Array.isArray(subCategoryIds) ? subCategoryIds : (subCategoryIds ? [subCategoryIds] : []);
+    const specificItemIdsArray = Array.isArray(specificItemIds) ? specificItemIds : (specificItemIds ? [specificItemIds] : []);
+    
+    listingDataForDb.selectedMainCategories = {
+        connect: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+    };
+    listingDataForDb.selectedSubCategories = {
+        connect: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+    };
+    listingDataForDb.selectedSpecificItems = {
+        connect: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
+    };
 
-    // Create listing
-    const newListing = await prisma.listing.create({ 
-        data: listingData,
+    // --- 4. Create the Listing in a Single, Atomic Operation ---
+    const newListingWithRelations = await prisma.listing.create({
+        data: listingDataForDb,
         include: {
+            // Include relations to get their full data (including names) for the email
             selectedMainCategories: true,
             selectedSubCategories: true,
-            selectedSpecificItems: true
-        }
+            selectedSpecificItems: true,
+        },
     });
 
-    // Connect categories if provided
-    if (mainCategoryIds) {
-        const mainCategoryIdsArray = ensureArray(mainCategoryIds);
-        if (mainCategoryIdsArray.length > 0) {
-            await prisma.listing.update({
-                where: { id: newListing.id },
-                data: {
-                    selectedMainCategories: {
-                        connect: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
-                    }
-                }
+    // --- 5. Handle Background Tasks (Notifications, Emails, Auditing) ---
+    // Use setImmediate to avoid blocking the HTTP response
+    setImmediate(async () => {
+        try {
+            const allUsers = await prisma.user.findMany({
+                select: { id: true, email: true, fname: true },
             });
-        }
-    }
 
-    if (subCategoryIds) {
-        const subCategoryIdsArray = ensureArray(subCategoryIds);
-        if (subCategoryIdsArray.length > 0) {
-            await prisma.listing.update({
-                where: { id: newListing.id },
-                data: {
-                    selectedSubCategories: {
-                        connect: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+            // Send notifications
+            const notificationPromises = allUsers.map(user => 
+                prisma.notification.create({
+                    data: {
+                        userId: user.id,
+                        title: "New Listing Available",
+                        message: `A new listing "${newListingWithRelations.name || 'Untitled'}" has been added.`,
+                        type: 'GENERAL',
+                        entityId: newListingWithRelations.id.toString(),
+                        entityType: 'Listing'
                     }
-                }
-            });
-        }
-    }
+                })
+            );
+            await Promise.all(notificationPromises);
 
-    if (specificItemIds) {
-        const specificItemIdsArray = ensureArray(specificItemIds);
-        if (specificItemIdsArray.length > 0) {
-            await prisma.listing.update({
-                where: { id: newListing.id },
-                data: {
-                    selectedSpecificItems: {
-                        connect: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
-                    }
-                }
-            });
-        }
-    }
+            // Correctly construct email details by mapping over the included relations
+            const listingDetails = `
+Name: ${newListingWithRelations.name || 'N/A'}
+Price: ${newListingWithRelations.price ? `$${newListingWithRelations.price}` : 'N/A'}
+Description: ${newListingWithRelations.description || 'No description available.'}
+Location: ${newListingWithRelations.location?.join(', ') || 'N/A'}
+Facilities: ${newListingWithRelations.facilities?.join(', ') || 'N/A'}
+Main Categories: ${newListingWithRelations.selectedMainCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+Sub Categories: ${newListingWithRelations.selectedSubCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
+            `.trim();
 
-    // Get the complete listing with relations
-    const completeListing = await prisma.listing.findUnique({
-        where: { id: newListing.id },
-        include: {
-            selectedMainCategories: true,
-            selectedSubCategories: true,
-            selectedSpecificItems: true
+            // Send emails
+            const emailPromises = allUsers.map(user => sendMail(
+                user.email,
+                "New Listing Available - Full Details",
+                `Hello ${user.fname || 'there'},\n\nA new listing has been added. Here are the details:\n\n${listingDetails}\n\nBest regards,\nYour Team`,
+                "en", // Emails are sent in English
+                { name: user.fname || 'there', listingDetails: listingDetails }
+            ).catch(err => console.error(`Failed to send email to ${user.email}:`, err))); // Add error handling per promise
+            
+            await Promise.allSettled(emailPromises);
+            console.log(`Background tasks initiated for new listing ${newListingWithRelations.id}`);
+
+        } catch (error) {
+            console.error(`Error in background task for listing ${newListingWithRelations.id}:`, error);
         }
+
+        // Record audit log
+        recordAuditLog(AuditLogAction.LISTING_CREATED, {
+            userId: reqDetails.actorUserId,
+            entityName: 'Listing',
+            entityId: newListingWithRelations.id,
+            newValues: newListingWithRelations,
+            description: `Listing '${newListingWithRelations.name || newListingWithRelations.id}' created.`,
+            ipAddress: reqDetails.ipAddress,
+            userAgent: reqDetails.userAgent,
+        });
     });
 
-    // // Cache Arabic version if needed
-    // if (redisClient.isReady) {
-    //     try {
-    //         let arListing;
-    //         if (lang === "ar") {
-    //             // Original input was Arabic - use original data with IDs
-    //             arListing = {
-    //                 ...completeListing,
-    //                 name: originalData.name,
-    //                 description: originalData.description,
-    //                 agegroup: originalData.agegroup || [],
-    //                 location: originalData.location || [],
-    //                 facilities: originalData.facilities || [],
-    //                 operatingHours: originalData.operatingHours || []
-    //             };
-    //         } else {
-    //             // Original input was English - translate to Arabic
-    //             arListing = await translateListingFields(completeListing, "AR", "EN");
-    //         }
-
-    //         await redisClient.setEx(
-    //             cacheKeys.listingAr(newListing.id),
-    //             AR_CACHE_EXPIRATION,
-    //             JSON.stringify(arListing)
-    //         );
-    //         console.log(`Redis: AR Cache - Cached new listing ${newListing.id}`);
-    //     } catch (cacheError) {
-    //         console.error("Redis: AR Cache - Listing caching error ->", cacheError.message);
-    //     }
-    // }
-
-    recordAuditLog(AuditLogAction.LISTING_CREATED, {
-        userId: reqDetails.actorUserId,
-        entityName: 'Listing',
-        entityId: newListing.id,
-        newValues: completeListing,
-        description: `Listing '${completeListing.name || completeListing.id}' created.`,
-        ipAddress: reqDetails.ipAddress,
-        userAgent: reqDetails.userAgent,
-    });
-
-    // Return appropriate language version
+    // --- 6. Prepare and Return Final Response Data ---
+    // If the original language was Arabic, return the original (untranslated) text fields
+    // to the user for a consistent UX, but use the full data with relations.
     if (lang === "ar") {
-        return lang === "ar" && originalData.name ? {
-            ...completeListing,
-            name: originalData.name,
-            description: originalData.description,
-            agegroup: originalData.agegroup || [],
-            location: originalData.location || [],
-            facilities: originalData.facilities || [],
-            operatingHours: originalData.operatingHours || []
-        } : await translateListingFields(completeListing, "AR", "EN");
+        return {
+            ...newListingWithRelations,
+            name: data.name,
+            description: data.description,
+            agegroup: data.agegroup || [],
+            location: data.location || [],
+            facilities: data.facilities || [],
+            operatingHours: data.operatingHours || [],
+        };
     }
-
-    return completeListing;
-  },
-
-
+    
+    return newListingWithRelations;
+},
 async getAllListings(filters = {}, lang = "en") {
-    const filterHash = createFilterHash(filters);
-    const cacheKey = cacheKeys.allListingsAr(filterHash);
-
- 
+    const { page = 1, limit = 8, search, rating, ...otherFilters } = filters;
+    const pageNum = parseInt(page, 10) || 1; // Add radix parameter and fallback
+    const limitNum = parseInt(limit, 10) || 8; // Add radix parameter and fallback
+    const offset = (pageNum - 1) * limitNum;
 
     // Build where clause for filtering
     let whereClause = { isActive: true };
+    let usingSimilaritySearch = false;
+
+    // Search functionality - enhanced to include facilities and multiple field search
+    if (search) {
+        const searchTerms = Array.isArray(search) ? search : [search];
+        whereClause.OR = [
+            { name: { contains: search, mode: 'insensitive' } },
+            { description: { contains: search, mode: 'insensitive' } },
+            { location: { hasSome: searchTerms } },
+            { facilities: { hasSome: searchTerms } }
+        ];
+    }
 
     // Filter by main categories
-    if (filters.mainCategoryIds && filters.mainCategoryIds.length > 0) {
-            whereClause.selectedMainCategories = {
-                    some: {
-                            id: { in: filters.mainCategoryIds.map(id => parseInt(id)) }
-                    }
-            };
+    if (otherFilters.mainCategoryIds && otherFilters.mainCategoryIds.length > 0) {
+        whereClause.selectedMainCategories = {
+            some: {
+                id: { in: otherFilters.mainCategoryIds.map(id => parseInt(id)) }
+            }
+        };
     }
 
     // Filter by sub categories
-    if (filters.subCategoryIds && filters.subCategoryIds.length > 0) {
-            whereClause.selectedSubCategories = {
-                    some: {
-                            id: { in: filters.subCategoryIds.map(id => parseInt(id)) }
-                    }
-            };
+    if (otherFilters.subCategoryIds && otherFilters.subCategoryIds.length > 0) {
+        whereClause.selectedSubCategories = {
+            some: {
+                id: { in: otherFilters.subCategoryIds.map(id => parseInt(id)) }
+            }
+        };
     }
 
     // Filter by specific items
-    if (filters.specificItemIds && filters.specificItemIds.length > 0) {
-            whereClause.selectedSpecificItems = {
-                    some: {
-                            id: { in: filters.specificItemIds.map(id => parseInt(id)) }
-                    }
-            };
+    if (otherFilters.specificItemIds && otherFilters.specificItemIds.length > 0) {
+        whereClause.selectedSpecificItems = {
+            some: {
+                id: { in: otherFilters.specificItemIds.map(id => parseInt(id)) }
+            }
+        };
     }
 
     // Price range filter
-    if (filters.minPrice || filters.maxPrice) {
-            whereClause.price = {};
-            if (filters.minPrice) whereClause.price.gte = parseFloat(filters.minPrice);
-            if (filters.maxPrice) whereClause.price.lte = parseFloat(filters.maxPrice);
+    if (otherFilters.minPrice || otherFilters.maxPrice || otherFilters.price) {
+        whereClause.price = {};
+        if (otherFilters.minPrice) whereClause.price.gte = parseFloat(otherFilters.minPrice);
+        if (otherFilters.maxPrice) whereClause.price.lte = parseFloat(otherFilters.maxPrice);
+        if (otherFilters.price) whereClause.price.equals = parseFloat(otherFilters.price);
     }
 
-    // Location filter - support multiple locations
-    if (filters.location) {
-            const locations = Array.isArray(filters.location) ? filters.location : [filters.location];
-            whereClause.location = {
-                    hasSome: locations
-            };
+    // Location filter
+    if (otherFilters.location) {
+        const locations = Array.isArray(otherFilters.location) ? otherFilters.location : [otherFilters.location];
+        whereClause.location = { hasSome: locations };
     }
 
-    // Facilities filter - support multiple facilities
-    if (filters.facilities && filters.facilities.length > 0) {
-            const facilitiesArray = Array.isArray(filters.facilities) ? filters.facilities : [filters.facilities];
-            whereClause.facilities = {
-                    hasSome: facilitiesArray
-            };
+    // Age group filter - exact match first
+    if (otherFilters.agegroup && otherFilters.agegroup.length > 0) {
+        const ageGroups = Array.isArray(otherFilters.agegroup) ? otherFilters.agegroup : [otherFilters.agegroup];
+        whereClause.agegroup = { hasSome: ageGroups };
     }
 
-    // Age group filter - support multiple age groups
-    if (filters.agegroup && filters.agegroup.length > 0) {
-            const ageGroupArray = Array.isArray(filters.agegroup) ? filters.agegroup : [filters.agegroup];
-            whereClause.agegroup = {
-                    hasSome: ageGroupArray
-            };
-    }
+    // Handle rating filter for exact matches
+    let allListingsWithStats = [];
+    let totalCount = 0;
+    let listings = [];
 
-    const listings = await prisma.listing.findMany({
+    if (rating) {
+        // When rating filter is applied, we need to fetch all listings first, calculate stats, then filter and paginate
+        allListingsWithStats = await prisma.listing.findMany({
             where: whereClause,
             include: {
-                    selectedMainCategories: true,
-                    selectedSubCategories: true,
-                    selectedSpecificItems: true,
-                    reviews: {
-                            include: {
-                                    user: {
-                                            select: {
-                                                    id: true,
-                                                    fname: true,
-                                                    lname: true
-                                            }
-                                    }
-                            }
-                    },
-                    bookings: {
-                            include: {
-                                    user: {
-                                            select: {
-                                                    id: true,
-                                                    fname: true,
-                                                    lname: true,
-                                                    email: true
-                                            }
-                                    }
-                            }
-                    }
+                selectedMainCategories: true,
+                selectedSubCategories: true,
+                selectedSpecificItems: true,
+                reviews: {
+                    where: { status: 'ACCEPTED' },
+                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                },
+                bookings: {
+                    select: { id: true, status: true, createdAt: true }
+                }
             },
-            orderBy: { createdAt: 'desc' }
-    });
+            orderBy: { id: 'asc' }
+        });
 
-    let result = listings;
+        // Calculate stats and filter by rating
+        const listingsWithStats = allListingsWithStats.map(listing => {
+            const acceptedReviews = listing.reviews;
+            const totalReviews = acceptedReviews.length;
+            const averageRating = totalReviews > 0 
+                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                : 0;
 
-    // Translate to Arabic if needed
-    if (lang === "ar" && deeplClient) {
-            result = await Promise.all(
-                    listings.map(async (listing) => {
-                            const translatedListing = await translateListingFields(listing, "AR", "EN");
-                            
-                            // Translate reviews
-                            if (listing.reviews && listing.reviews.length > 0) {
-                                translatedListing.reviews = await Promise.all(
-                                    listing.reviews.map(async (review) => ({
-                                        ...review,
-                                        comment: review.comment ? await translateText(review.comment, "AR", "EN") : review.comment
-                                    }))
-                                );
-                            } else {
-                                translatedListing.reviews = [];
-                            }
-                            
-                            // Translate bookings (additionalNote field)
-                            if (listing.bookings && listing.bookings.length > 0) {
-                                translatedListing.bookings = await Promise.all(
-                                    listing.bookings.map(async (booking) => ({
-                                        ...booking,
-                                        additionalNote: booking.additionalNote ? await translateText(booking.additionalNote, "AR", "EN") : booking.additionalNote
-                                    }))
-                                );
-                            } else {
-                                translatedListing.bookings = [];
-                            }
-                            
-                            return translatedListing;
-                    })
-            );
+            const ratingDistribution = {
+                5: acceptedReviews.filter(r => r.rating === 5).length,
+                4: acceptedReviews.filter(r => r.rating === 4).length,
+                3: acceptedReviews.filter(r => r.rating === 3).length,
+                2: acceptedReviews.filter(r => r.rating === 2).length,
+                1: acceptedReviews.filter(r => r.rating === 1).length
+            };
 
-         
+            return {
+                ...listing,
+                averageRating: Math.round(averageRating * 10) / 10,
+                totalReviews,
+                ratingDistribution,
+                totalBookings: listing.bookings.length,
+                confirmedBookings: listing.bookings.filter(b => b.status === 'CONFIRMED').length
+            };
+        });
+
+        const minRating = parseFloat(rating);
+        const filteredListings = listingsWithStats.filter(listing => listing.averageRating >= minRating);
+        
+        totalCount = filteredListings.length;
+        listings = filteredListings.slice(offset, offset + limitNum);
+    } else {
+        // No rating filter - use regular pagination
+        totalCount = await prisma.listing.count({ where: whereClause });
+
+        listings = await prisma.listing.findMany({
+            where: whereClause,
+            include: {
+                selectedMainCategories: true,
+                selectedSubCategories: true,
+                selectedSpecificItems: true,
+                reviews: {
+                    where: { status: 'ACCEPTED' },
+                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                },
+                bookings: {
+                    select: { id: true, status: true, createdAt: true }
+                }
+            },
+            orderBy: { id: 'asc' },
+            skip: offset,
+            take: limitNum
+        });
     }
 
-    return result;
+    // If no results found, use intelligent similarity search
+    if (listings.length === 0 && this.hasSearchCriteria(filters)) {
+        console.log("No exact matches found, attempting intelligent similarity search...");
+        usingSimilaritySearch = true;
+        
+        // Get all active listings for similarity comparison
+        const allListings = await prisma.listing.findMany({
+            where: { isActive: true },
+            include: {
+                selectedMainCategories: true,
+                selectedSubCategories: true,
+                selectedSpecificItems: true,
+                reviews: {
+                    where: { status: 'ACCEPTED' },
+                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                },
+                bookings: {
+                    select: { id: true, status: true, createdAt: true }
+                }
+            },
+            orderBy: { id: 'asc' }
+        });
+
+        // Calculate similarity scores
+        const scoredListings = allListings.map(listing => ({
+            ...listing,
+            similarityScore: this.calculateIntelligentSimilarityScore(listing, filters)
+        }));
+
+        const similarityThreshold = 0.4;
+        
+        const filteredScoredListings = scoredListings
+            .filter(listing => listing.similarityScore > similarityThreshold)
+            .sort((a, b) => {
+                if (b.similarityScore !== a.similarityScore) {
+                    return b.similarityScore - a.similarityScore;
+                }
+                return a.id - b.id;
+            });
+
+        totalCount = filteredScoredListings.length;
+        listings = filteredScoredListings.slice(offset, offset + limitNum);
+        
+        console.log(`Similarity search found ${listings.length} matches out of ${allListings.length} total listings (threshold: ${similarityThreshold})`);
+        
+        if (listings.length === 0) {
+            console.log("No listings meet the minimum similarity threshold");
+            return {
+                listings: [],
+                totalCount: 0,
+                totalPages: 0,
+                currentPage: pageNum,
+                hasNextPage: false,
+                hasPrevPage: pageNum > 1,
+                usingSimilaritySearch: true
+            };
+        }
+    }
+
+    // Calculate review statistics for listings without rating filter (or similarity search)
+    if (!rating && !usingSimilaritySearch) {
+        listings = listings.map(listing => {
+            const acceptedReviews = listing.reviews;
+            const totalReviews = acceptedReviews.length;
+            const averageRating = totalReviews > 0 
+                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                : 0;
+
+            const ratingDistribution = {
+                5: acceptedReviews.filter(r => r.rating === 5).length,
+                4: acceptedReviews.filter(r => r.rating === 4).length,
+                3: acceptedReviews.filter(r => r.rating === 3).length,
+                2: acceptedReviews.filter(r => r.rating === 2).length,
+                1: acceptedReviews.filter(r => r.rating === 1).length
+            };
+
+            return {
+                ...listing,
+                averageRating: Math.round(averageRating * 10) / 10,
+                totalReviews,
+                ratingDistribution,
+                totalBookings: listing.bookings.length,
+                confirmedBookings: listing.bookings.filter(b => b.status === 'CONFIRMED').length
+            };
+        });
+    }
+
+    // Handle Arabic translation and caching
+    if (lang === "ar" && deeplClient) {
+        const cachedArListings = new Map();
+        if (redisClient.isReady) {
+            try {
+                for (const listing of listings) {
+                    const cachedListing = await redisClient.get(cacheKeys.listingAr(listing.id));
+                    if (cachedListing) {
+                        const parsed = JSON.parse(cachedListing);
+                        if (parsed.totalReviews === listing.totalReviews && 
+                            parsed.totalBookings === listing.totalBookings) {
+                            cachedArListings.set(listing.id, parsed);
+                        }
+                    }
+                }
+            } catch (cacheError) {
+                console.error("Redis: AR Cache - Error checking individual listings ->", cacheError.message);
+            }
+        }
+
+        listings = await Promise.all(
+            listings.map(async (listing) => {
+                const cachedListing = cachedArListings.get(listing.id);
+                if (cachedListing) {
+                    return cachedListing;
+                }
+
+                const translatedListing = await translateListingFields(listing, "AR", "EN");
+                
+                if (redisClient.isReady) {
+                    try {
+                        await redisClient.setEx(
+                            cacheKeys.listingAr(listing.id),
+                            AR_CACHE_EXPIRATION,
+                            JSON.stringify(translatedListing)
+                        );
+                        console.log(`Redis: AR Cache - Cached individual listing ${listing.id}`);
+                    } catch (cacheError) {
+                        console.error(`Redis: AR Cache - Error caching listing ${listing.id} ->`, cacheError.message);
+                    }
+                }
+
+                return translatedListing;
+            })
+        );
+    }
+
+    // Calculate final pagination
+    const totalPages = Math.ceil(totalCount / limitNum);
+
+    return {
+        listings: listings,
+        totalCount: totalCount,
+        totalPages,
+        currentPage: pageNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        usingSimilaritySearch
+    };
 },
 
-async getListingById(id, lang = "en") {
-    const listingId = parseInt(id, 10);
-    const cacheKey = cacheKeys.listingAr(listingId);
 
+// Check if any search criteria is provided
+hasSearchCriteria(filters) {
+    return !!(filters.search || filters.facilities || filters.location || 
+              filters.agegroup || filters.mainCategoryIds || filters.subCategoryIds || 
+              filters.specificItemIds || filters.minPrice || filters.maxPrice);
+},
+
+// Enhanced intelligent similarity calculation with all filter types
+calculateIntelligentSimilarityScore(listing, filters) {
+    let score = 0;
+    let maxScore = 0;
+
+    // Text similarity for search terms
+    if (filters.search) {
+        maxScore += 1;
+        const searchLower = filters.search.toLowerCase();
+        
+        const nameMatch = listing.name?.toLowerCase().includes(searchLower) ? 0.4 : 0;
+        const descMatch = listing.description?.toLowerCase().includes(searchLower) ? 0.3 : 0;
+        const semanticMatch = this.calculateSemanticSimilarity(searchLower, listing);
+        
+        score += nameMatch + descMatch + semanticMatch;
+    }
+
+    // Facilities matching
+    if (filters.facilities) {
+        maxScore += 1.2;
+        const filterFacilities = Array.isArray(filters.facilities) ? filters.facilities : [filters.facilities];
+        
+        let facilitiesScore = 0;
+        filterFacilities.forEach(filterFacility => {
+            const components = this.analyzeFacilityComponents(filterFacility);
+            const matchScore = this.matchFacilityComponents(components, listing.facilities || []);
+            facilitiesScore += matchScore;
+        });
+        
+        score += (facilitiesScore / filterFacilities.length) * 1.2;
+    }
+
+    // Location similarity
+    if (filters.location) {
+        maxScore += 0.8;
+        const filterLocations = Array.isArray(filters.location) ? filters.location : [filters.location];
+        const locationScore = this.calculateLocationSimilarity(filterLocations, listing.location || []);
+        score += locationScore * 0.8;
+    }
+
+    // Age group similarity
+    if (filters.agegroup) {
+        maxScore += 0.7;
+        const filterAgeGroups = Array.isArray(filters.agegroup) ? filters.agegroup : [filters.agegroup];
+        const ageScore = this.calculateAgeGroupSimilarity(filterAgeGroups, listing.agegroup || []);
+        score += ageScore * 0.7;
+    }
+
+    // Price range similarity - reduce weight for price matching
+    if (filters.minPrice || filters.maxPrice || filters.price) {
+        maxScore += 0.3; // Reduced from 0.5
+        const priceScore = this.calculatePriceSimilarity(filters, listing.price);
+        score += priceScore * 0.3;
+    }
+
+    // Main category similarity
+    if (filters.mainCategoryIds && filters.mainCategoryIds.length > 0) {
+        maxScore += 0.6;
+        const categoryScore = this.calculateCategorySimilarity(
+            filters.mainCategoryIds, 
+            listing.selectedMainCategories || []
+        );
+        score += categoryScore * 0.6;
+    }
+
+    // Sub category similarity
+    if (filters.subCategoryIds && filters.subCategoryIds.length > 0) {
+        maxScore += 0.5;
+        const subCategoryScore = this.calculateCategorySimilarity(
+            filters.subCategoryIds, 
+            listing.selectedSubCategories || []
+        );
+        score += subCategoryScore * 0.5;
+    }
+
+    // Specific items similarity
+    if (filters.specificItemIds && filters.specificItemIds.length > 0) {
+        maxScore += 0.4;
+        const specificScore = this.calculateCategorySimilarity(
+            filters.specificItemIds, 
+            listing.selectedSpecificItems || []
+        );
+        score += specificScore * 0.4;
+    }
+
+    return maxScore > 0 ? Math.min(score / maxScore, 1) : 0;
+},
+
+// Calculate age group similarity with range overlap
+calculateAgeGroupSimilarity(filterAgeGroups, listingAgeGroups) {
+    if (!listingAgeGroups || listingAgeGroups.length === 0) return 0;
     
+    const parseAgeRange = (ageStr) => {
+        const match = ageStr.match(/(\d+)(?:-(\d+))?\s*years?/i);
+        if (match) {
+            const min = parseInt(match[1]);
+            const max = match[2] ? parseInt(match[2]) : min;
+            return { min, max };
+        }
+        return null;
+    };
 
+    const filterRanges = filterAgeGroups.map(parseAgeRange).filter(Boolean);
+    const listingRanges = listingAgeGroups.map(parseAgeRange).filter(Boolean);
+    
+    if (filterRanges.length === 0 || listingRanges.length === 0) return 0;
+
+    let bestScore = 0;
+    
+    filterRanges.forEach(filterRange => {
+        listingRanges.forEach(listingRange => {
+            // Calculate overlap
+            const overlapStart = Math.max(filterRange.min, listingRange.min);
+            const overlapEnd = Math.min(filterRange.max, listingRange.max);
+            
+            if (overlapStart <= overlapEnd) {
+                const overlapSize = overlapEnd - overlapStart + 1;
+                const filterSize = filterRange.max - filterRange.min + 1;
+                const similarity = overlapSize / filterSize;
+                bestScore = Math.max(bestScore, similarity);
+            }
+        });
+    });
+    
+    return bestScore;
+},
+
+// Calculate price similarity with stricter tolerance
+calculatePriceSimilarity(filters, listingPrice) {
+    if (!listingPrice) return 0;
+    
+    const minPrice = filters.minPrice ? parseFloat(filters.minPrice) : 0;
+    const maxPrice = filters.maxPrice ? parseFloat(filters.maxPrice) : Infinity;
+    const price = filters.price ? parseFloat(filters.price) : null;
+    
+    // If within range, perfect match
+    if (listingPrice >= minPrice && listingPrice <= maxPrice || (price && listingPrice === price)) {
+        return 1;
+    }
+    
+    // Calculate similarity based on how close the price is to the range
+    let distance = 0;
+    if (listingPrice < minPrice) {
+        distance = minPrice - listingPrice;
+    } else if (listingPrice > maxPrice) {
+        distance = listingPrice - maxPrice;
+    } else if (price && listingPrice !== price) {
+        distance = Math.abs(listingPrice - price);
+    }
+
+    // Use stricter tolerance for price matching
+    const rangeSize = maxPrice === Infinity ? minPrice : maxPrice - minPrice;
+    if (rangeSize <= 0) return 0;
+    
+    const tolerance = Math.max(rangeSize * 0.15, 50); // Reduced from 30% to 15% tolerance and from $100 to $50
+    
+    const similarity = Math.exp(-distance / tolerance);
+    
+    // Only return similarity if it's above 0.7 (stricter price matching)
+    return similarity > 0.7 ? similarity : 0;
+},
+
+// Calculate category similarity (works for main, sub, and specific categories)
+calculateCategorySimilarity(filterCategoryIds, listingCategories) {
+    if (!listingCategories || listingCategories.length === 0) return 0;
+    
+    const listingCategoryIds = listingCategories.map(cat => cat.id.toString());
+    const filterIds = filterCategoryIds.map(id => id.toString());
+    
+    // Calculate Jaccard similarity (intersection over union)
+    const intersection = filterIds.filter(id => listingCategoryIds.includes(id)).length;
+    const union = new Set([...filterIds, ...listingCategoryIds]).size;
+    
+    return union > 0 ? intersection / union : 0;
+},
+
+// Analyze facility components for intelligent matching
+analyzeFacilityComponents(facility) {
+    const facilityLower = facility.toLowerCase();
+    
+    const componentMappings = {
+        gym: ['gym', 'fitness', 'workout', 'exercise', 'training'],
+        pool: ['pool', 'swimming', 'water', 'aquatic'],
+        court: ['court', 'tennis', 'basketball', 'badminton', 'volleyball'],
+        field: ['field', 'football', 'soccer', 'cricket', 'rugby'],
+        parking: ['parking', 'garage', 'valet'],
+        wifi: ['wifi', 'internet', 'broadband', 'connection'],
+        ac: ['ac', 'air conditioning', 'climate', 'cooling'],
+        playground: ['playground', 'play area', 'kids', 'children'],
+        garden: ['garden', 'park', 'outdoor', 'green space'],
+        restaurant: ['restaurant', 'cafe', 'dining', 'food', 'kitchen'],
+        spa: ['spa', 'massage', 'wellness', 'relaxation']
+    };
+    
+    const components = [];
+    
+    Object.keys(componentMappings).forEach(key => {
+        if (componentMappings[key].some(term => facilityLower.includes(term))) {
+            components.push(key);
+        }
+    });
+    
+    if (components.length === 0) {
+        components.push(...facilityLower.split(/\s+/).filter(word => word.length > 2));
+    }
+    
+    return components;
+},
+
+// Match facility components against listing facilities
+matchFacilityComponents(components, listingFacilities) {
+    if (!listingFacilities || listingFacilities.length === 0) return 0;
+    
+    const listingFacilitiesFlat = listingFacilities.flatMap(fac => 
+        fac.split(',').map(f => f.trim().toLowerCase())
+    );
+    
+    let matchScore = 0;
+    const totalComponents = components.length;
+    
+    components.forEach(component => {
+        const directMatch = listingFacilitiesFlat.some(lf => 
+            lf.includes(component) || component.includes(lf)
+        );
+        
+        if (directMatch) {
+            matchScore += 1;
+        } else {
+            const bestSimilarity = Math.max(
+                ...listingFacilitiesFlat.map(lf => 
+                    this.calculateStringSimilarity(component, lf)
+                )
+            );
+            if (bestSimilarity > 0.6) {
+                matchScore += bestSimilarity;
+            }
+        }
+    });
+    
+    return totalComponents > 0 ? matchScore / totalComponents : 0;
+},
+
+// Calculate semantic similarity for search terms
+calculateSemanticSimilarity(searchTerm, listing) {
+    const semanticMappings = {
+        'gym': ['fitness', 'workout', 'exercise', 'training', 'health club'],
+        'pool': ['swimming', 'water', 'aquatic center', 'swim'],
+        'restaurant': ['dining', 'food', 'cafe', 'kitchen', 'eatery'],
+        'parking': ['garage', 'valet', 'car park'],
+        'spa': ['wellness', 'massage', 'relaxation', 'beauty'],
+        'outdoor': ['garden', 'park', 'open air', 'terrace'],
+        'kids': ['children', 'family', 'playground', 'child-friendly']
+    };
+    
+    let semanticScore = 0;
+    const allText = `${listing.name || ''} ${listing.description || ''} ${listing.facilities?.join(' ') || ''}`.toLowerCase();
+    
+    Object.keys(semanticMappings).forEach(key => {
+        if (searchTerm.includes(key)) {
+            const relatedTerms = semanticMappings[key];
+            const hasRelatedTerm = relatedTerms.some(term => allText.includes(term));
+            if (hasRelatedTerm) {
+                semanticScore += 0.2;
+            }
+        }
+    });
+    
+    return Math.min(semanticScore, 0.3);
+},
+
+// Calculate location similarity
+calculateLocationSimilarity(filterLocations, listingLocations) {
+    if (!listingLocations || listingLocations.length === 0) return 0;
+    
+    let bestScore = 0;
+    
+    filterLocations.forEach(filterLoc => {
+        listingLocations.forEach(listingLoc => {
+            if (listingLoc.toLowerCase().includes(filterLoc.toLowerCase()) || 
+                filterLoc.toLowerCase().includes(listingLoc.toLowerCase())) {
+                bestScore = Math.max(bestScore, 1);
+            } else {
+                const similarity = this.calculateStringSimilarity(
+                    filterLoc.toLowerCase(), 
+                    listingLoc.toLowerCase()
+                );
+                bestScore = Math.max(bestScore, similarity);
+            }
+        });
+    });
+    
+    return bestScore;
+},
+
+// Levenshtein distance based string similarity
+calculateStringSimilarity(str1, str2) {
+    const len1 = str1.length;
+    const len2 = str2.length;
+    const matrix = Array(len2 + 1).fill().map(() => Array(len1 + 1).fill(0));
+
+    for (let i = 0; i <= len1; i++) matrix[0][i] = i;
+    for (let j = 0; j <= len2; j++) matrix[j][0] = j;
+
+    for (let j = 1; j <= len2; j++) {
+        for (let i = 1; i <= len1; i++) {
+            if (str1[i - 1] === str2[j - 1]) {
+                matrix[j][i] = matrix[j - 1][i - 1];
+            } else {
+                matrix[j][i] = Math.min(
+                    matrix[j - 1][i] + 1,
+                    matrix[j][i - 1] + 1,
+                    matrix[j - 1][i - 1] + 1
+                );
+            }
+        }
+    }
+
+    const distance = matrix[len2][len1];
+    const maxLen = Math.max(len1, len2);
+    return maxLen === 0 ? 1 : (maxLen - distance) / maxLen;
+},
+
+
+
+
+
+
+
+
+  async getListingById(id, lang = "en") {
+    const listingId = parseInt(id, 10);
+
+    // Check Redis cache for Arabic, but only if the full stats are present
+    if (lang === "ar" && redisClient.isReady) {
+        try {
+            const cachedListing = await redisClient.get(cacheKeys.listingAr(listingId));
+            if (cachedListing) {
+                const parsed = JSON.parse(cachedListing);
+                // Ensure cached version has the stats we need
+                if (parsed.averageRating !== undefined && parsed.totalReviews !== undefined) {
+                    console.log(`Redis: AR Cache - Fetched listing ${listingId} with stats from cache`);
+                    return parsed;
+                }
+            }
+        } catch (cacheError) {
+            console.error(`Redis: AR Cache - Error fetching listing ${listingId} ->`, cacheError.message);
+        }
+    }
+
+    // Fetch the raw listing with all necessary relations for stat calculation
     const listing = await prisma.listing.findUnique({ 
         where: { id: listingId },
         include: {
@@ -454,232 +952,271 @@ async getListingById(id, lang = "en") {
             selectedSubCategories: true,
             selectedSpecificItems: true,
             reviews: {
-                include: {
-                    user: {
-                        select: {
-                            id: true,
-                            fname: true,
-                            lname: true
-                        }
-                    }
-                }
+                where: { status: 'ACCEPTED' },
+                select: { rating: true } // Only need rating for calculation
             },
             bookings: {
-                include: {
-                    user: {
-                        select: {
-                            id: true,
-                            fname: true,
-                            lname: true,
-                            email: true
-                        }
-                    }
-                }
+                select: { status: true } // Only need status for calculation
             }
         }
     });
 
     if (!listing) return null;
 
-    let result = listing;
+    // --- Calculate review and booking statistics ---
+    const acceptedReviews = listing.reviews;
+    const totalReviews = acceptedReviews.length;
+    const averageRating = totalReviews > 0 
+        ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+        : 0;
 
-    // Translate to Arabic if needed
+    const ratingDistribution = {
+        5: acceptedReviews.filter(r => r.rating === 5).length,
+        4: acceptedReviews.filter(r => r.rating === 4).length,
+        3: acceptedReviews.filter(r => r.rating === 3).length,
+        2: acceptedReviews.filter(r => r.rating === 2).length,
+        1: acceptedReviews.filter(r => r.rating === 1).length
+    };
+
+    const enhancedListing = {
+        ...listing,
+        averageRating: Math.round(averageRating * 10) / 10,
+        totalReviews,
+        ratingDistribution,
+        totalBookings: listing.bookings.length,
+        confirmedBookings: listing.bookings.filter(b => b.status === 'CONFIRMED').length
+    };
+    // --- End of statistics calculation ---
+
+    // Translate and cache if Arabic
     if (lang === "ar" && deeplClient) {
-        result = await translateListingFields(listing, "AR", "EN");
+        const translatedListing = await translateListingFields(enhancedListing, "AR", "EN");
         
-        // Translate reviews
-        if (listing.reviews && listing.reviews.length > 0) {
-            result.reviews = await Promise.all(
-                listing.reviews.map(async (review) => ({
-                    ...review,
-                    comment: review.comment ? await translateText(review.comment, "AR", "EN") : review.comment
-                }))
-            );
-        } else {
-            result.reviews = [];
+        if (redisClient.isReady) {
+            try {
+                await redisClient.setEx(
+                    cacheKeys.listingAr(listingId),
+                    AR_CACHE_EXPIRATION,
+                    JSON.stringify(translatedListing)
+                );
+                console.log(`Redis: AR Cache - Cached listing ${listingId} with stats`);
+            } catch (cacheError) {
+                console.error(`Redis: AR Cache - Error caching listing ${listingId} ->`, cacheError.message);
+            }
         }
-        
-        // Translate bookings (additionalNote field)
-        if (listing.bookings && listing.bookings.length > 0) {
-            result.bookings = await Promise.all(
-                listing.bookings.map(async (booking) => ({
-                    ...booking,
-                    additionalNote: booking.additionalNote ? await translateText(booking.additionalNote, "AR", "EN") : booking.additionalNote
-                }))
-            );
-        } else {
-            result.bookings = [];
-        }
-        
-       
+        return translatedListing;
     }
 
-    return result;
+    return enhancedListing;
 },
+
 
 async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     const listingId = parseInt(id, 10);
     const currentListing = await prisma.listing.findUnique({ 
-            where: { id: listingId },
-            include: {
-                    selectedMainCategories: true,
-                    selectedSubCategories: true,
-                    selectedSpecificItems: true
-            }
+        where: { id: listingId },
+        include: {
+            selectedMainCategories: true,
+            selectedSubCategories: true,
+            selectedSpecificItems: true
+        }
     });
     
     if (!currentListing) return null;
 
+    // Handle case where data might be undefined or empty
+    const safeData = data || {};
     const { name, price, description, agegroup, location, facilities, operatingHours, 
-                    mainCategoryIds, subCategoryIds, specificItemIds, removed_sub_images } = data;
+            mainCategoryIds, subCategoryIds, specificItemIds, removed_sub_images } = safeData;
     
-    let originalData = { ...data };
     let updateData = {};
-
-    // Helper function to ensure array format
-    const ensureArray = (value) => {
-            if (!value) return [];
-            if (Array.isArray(value)) return value;
-            if (typeof value === 'string') {
-                    return value.split(',').map(item => item.trim()).filter(item => item.length > 0);
-            }
-            return [];
-    };
 
     // Handle price
     if (price !== undefined) updateData.price = parseFloat(price);
 
-    // Handle main image - delete previous if new one is uploaded
+    // Handle images
+    let newMainImageFilename = currentListing.main_image ? 
+        path.basename(new URL(currentListing.main_image).pathname) : null;
+    let currentSubImageFilenames = currentListing.sub_images.map(url => 
+        path.basename(new URL(url).pathname));
+
     if (files && files.main_image && files.main_image[0]) {
-            // Delete previous main image if exists
-            if (currentListing.main_image) {
-                    const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
-                    deleteFile(oldMainImageFilename);
-            }
-            // Set new main image
-            const newMainImageFilename = files.main_image[0].filename;
-            updateData.main_image = getFileUrl(newMainImageFilename);
+        if (currentListing.main_image) {
+            const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
+            deleteFile(oldMainImageFilename);
+        }
+        newMainImageFilename = files.main_image[0].filename;
+        updateData.main_image = getFileUrl(newMainImageFilename);
     }
 
-    // Handle sub-images - delete all previous if new ones are uploaded
+    // Handle sub-images
+    let finalSubImageFilenames = [...currentSubImageFilenames];
+    if (removed_sub_images) {
+        const imagesToRemove = Array.isArray(removed_sub_images) ? removed_sub_images : [removed_sub_images];
+        imagesToRemove.forEach(imgUrlToRemove => {
+            const filenameToRemove = path.basename(new URL(imgUrlToRemove).pathname);
+            if (deleteFile(filenameToRemove)) {
+                finalSubImageFilenames = finalSubImageFilenames.filter(fn => fn !== filenameToRemove);
+            }
+        });
+    }
+
     if (files && files.sub_images && files.sub_images.length > 0) {
-            // Delete all previous sub images
-            if (currentListing.sub_images && currentListing.sub_images.length > 0) {
-                    currentListing.sub_images.forEach(imageUrl => {
-                            const filenameToDelete = path.basename(new URL(imageUrl).pathname);
-                            deleteFile(filenameToDelete);
-                    });
-            }
-            // Set new sub images
-            const newSubImageFilenames = files.sub_images.map(file => file.filename);
-            updateData.sub_images = newSubImageFilenames.map(filename => getFileUrl(filename));
-    } else if (removed_sub_images) {
-            // Handle individual sub-image removals if no new sub-images uploaded
-            const currentSubImageFilenames = currentListing.sub_images.map(url => 
-                    path.basename(new URL(url).pathname));
-            let finalSubImageFilenames = [...currentSubImageFilenames];
-            
-            const imagesToRemove = Array.isArray(removed_sub_images) ? removed_sub_images : [removed_sub_images];
-            imagesToRemove.forEach(imgUrlToRemove => {
-                    const filenameToRemove = path.basename(new URL(imgUrlToRemove).pathname);
-                    if (deleteFile(filenameToRemove)) {
-                            finalSubImageFilenames = finalSubImageFilenames.filter(fn => fn !== filenameToRemove);
-                    }
-            });
-            
-            updateData.sub_images = finalSubImageFilenames.map(filename => getFileUrl(filename));
+        const newUploadedSubImageFilenames = files.sub_images.map(file => file.filename);
+        finalSubImageFilenames.push(...newUploadedSubImageFilenames);
     }
+    updateData.sub_images = finalSubImageFilenames.map(filename => getFileUrl(filename));
 
-    // Handle text fields with translation
+    // Handle text fields with translation based on input language
     if (lang === "ar" && deeplClient) {
-            if (name !== undefined) updateData.name = await translateText(name, "EN-US", "AR");
-            if (description !== undefined) updateData.description = await translateText(description, "EN-US", "AR");
-            if (agegroup !== undefined) updateData.agegroup = await translateArrayFields(ensureArray(agegroup), "EN-US", "AR");
-            if (location !== undefined) updateData.location = await translateArrayFields(ensureArray(location), "EN-US", "AR");
-            if (facilities !== undefined) updateData.facilities = await translateArrayFields(ensureArray(facilities), "EN-US", "AR");
-            if (operatingHours !== undefined) updateData.operatingHours = await translateArrayFields(ensureArray(operatingHours), "EN-US", "AR");
+        // If input is Arabic, translate to English for database storage
+        if (name !== undefined) updateData.name = await translateText(name, "EN-US", "AR");
+        if (description !== undefined) updateData.description = await translateText(description, "EN-US", "AR");
+        if (agegroup !== undefined) updateData.agegroup = await translateArrayFields(Array.isArray(agegroup) ? agegroup : [agegroup], "EN-US", "AR");
+        if (location !== undefined) updateData.location = await translateArrayFields(Array.isArray(location) ? location : [location], "EN-US", "AR");
+        if (facilities !== undefined) updateData.facilities = await translateArrayFields(Array.isArray(facilities) ? facilities : [facilities], "EN-US", "AR");
+        if (operatingHours !== undefined) updateData.operatingHours = await translateArrayFields(Array.isArray(operatingHours) ? operatingHours : [operatingHours], "EN-US", "AR");
     } else {
-            if (name !== undefined) updateData.name = name;
-            if (description !== undefined) updateData.description = description;
-            if (agegroup !== undefined) updateData.agegroup = ensureArray(agegroup);
-            if (location !== undefined) updateData.location = ensureArray(location);
-            if (facilities !== undefined) updateData.facilities = ensureArray(facilities);
-            if (operatingHours !== undefined) updateData.operatingHours = ensureArray(operatingHours);
+        // If input is English, store directly
+        if (name !== undefined) updateData.name = name;
+        if (description !== undefined) updateData.description = description;
+        if (agegroup !== undefined) updateData.agegroup = Array.isArray(agegroup) ? agegroup : [agegroup];
+        if (location !== undefined) updateData.location = Array.isArray(location) ? location : [location];
+        if (facilities !== undefined) updateData.facilities = Array.isArray(facilities) ? facilities : [facilities];
+        if (operatingHours !== undefined) updateData.operatingHours = Array.isArray(operatingHours) ? operatingHours : [operatingHours];
     }
 
-    // Update listing
-   await prisma.listing.update({
-            where: { id: listingId },
-            data: updateData,
-            include: {
-                    selectedMainCategories: true,
-                    selectedSubCategories: true,
-                    selectedSpecificItems: true
-            }
+    // Update listing with basic data
+    await prisma.listing.update({
+        where: { id: listingId },
+        data: updateData
     });
 
     // Handle category connections
     if (mainCategoryIds !== undefined) {
-            const mainCategoryIdsArray = ensureArray(mainCategoryIds);
-            await prisma.listing.update({
-                    where: { id: listingId },
-                    data: {
-                            selectedMainCategories: {
-                                    set: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
-                            }
-                    }
-            });
+        const mainCategoryIdsArray = Array.isArray(mainCategoryIds) ? mainCategoryIds : [mainCategoryIds];
+        await prisma.listing.update({
+            where: { id: listingId },
+            data: {
+                selectedMainCategories: {
+                    set: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                }
+            }
+        });
     }
 
     if (subCategoryIds !== undefined) {
-            const subCategoryIdsArray = ensureArray(subCategoryIds);
-            await prisma.listing.update({
-                    where: { id: listingId },
-                    data: {
-                            selectedSubCategories: {
-                                    set: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
-                            }
-                    }
-            });
+        const subCategoryIdsArray = Array.isArray(subCategoryIds) ? subCategoryIds : [subCategoryIds];
+        await prisma.listing.update({
+            where: { id: listingId },
+            data: {
+                selectedSubCategories: {
+                    set: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
+                }
+            }
+        });
     }
 
     if (specificItemIds !== undefined) {
-            const specificItemIdsArray = ensureArray(specificItemIds);
-            await prisma.listing.update({
-                    where: { id: listingId },
-                    data: {
-                            selectedSpecificItems: {
-                                    set: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
-                            }
-                    }
-            });
+        const specificItemIdsArray = Array.isArray(specificItemIds) ? specificItemIds : [specificItemIds];
+        await prisma.listing.update({
+            where: { id: listingId },
+            data: {
+                selectedSpecificItems: {
+                    set: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
+                }
+            }
+        });
     }
 
-    // Get final updated listing
-    const finalListing = await prisma.listing.findUnique({
-            where: { id: listingId },
-            include: {
+    // Handle background tasks
+    setImmediate(async () => {
+        try {
+            // Get final updated listing with all relations and stats
+            const finalListing = await prisma.listing.findUnique({
+                where: { id: listingId },
+                include: {
                     selectedMainCategories: true,
                     selectedSubCategories: true,
-                    selectedSpecificItems: true
+                    selectedSpecificItems: true,
+                    reviews: {
+                        where: { status: 'ACCEPTED' },
+                        select: { rating: true }
+                    },
+                    bookings: {
+                        select: { status: true }
+                    }
+                }
+            });
+
+            // Calculate stats
+            const acceptedReviews = finalListing.reviews;
+            const totalReviews = acceptedReviews.length;
+            const averageRating = totalReviews > 0 
+                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                : 0;
+
+            const ratingDistribution = {
+                5: acceptedReviews.filter(r => r.rating === 5).length,
+                4: acceptedReviews.filter(r => r.rating === 4).length,
+                3: acceptedReviews.filter(r => r.rating === 3).length,
+                2: acceptedReviews.filter(r => r.rating === 2).length,
+                1: acceptedReviews.filter(r => r.rating === 1).length
+            };
+
+            const enhancedFinalListing = {
+                ...finalListing,
+                averageRating: Math.round(averageRating * 10) / 10,
+                totalReviews,
+                ratingDistribution,
+                totalBookings: finalListing.bookings.length,
+                confirmedBookings: finalListing.bookings.filter(b => b.status === 'CONFIRMED').length
+            };
+
+            // Clear Redis cache
+            if (redisClient.isReady) {
+                await redisClient.del(cacheKeys.listingAr(listingId));
+                const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
+                if (keys.length > 0) {
+                    await redisClient.del(keys);
+                }
+                console.log(`Redis: AR Cache - Cleared listing ${listingId} cache`);
             }
+
+            // Update Arabic cache
+            if (deeplClient && redisClient.isReady) {
+                const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
+                await redisClient.setEx(
+                    cacheKeys.listingAr(listingId),
+                    AR_CACHE_EXPIRATION,
+                    JSON.stringify(translatedListing)
+                );
+                console.log(`Redis: AR Cache - Updated Arabic cache for listing ${listingId}`);
+            }
+
+            // Record audit log
+            recordAuditLog(AuditLogAction.LISTING_UPDATED, {
+                userId: reqDetails.actorUserId,
+                entityName: 'Listing',
+                entityId: enhancedFinalListing.id,
+                oldValues: currentListing,
+                newValues: enhancedFinalListing,
+                description: `Listing '${enhancedFinalListing.name || enhancedFinalListing.id}' updated.`,
+                ipAddress: reqDetails.ipAddress,
+                userAgent: reqDetails.userAgent,
+            });
+
+            console.log(`Background tasks completed for updated listing ${listingId}`);
+
+        } catch (error) {
+            console.error(`Error in background task for listing update ${listingId}:`, error);
+        }
     });
 
- 
-
-    recordAuditLog(AuditLogAction.LISTING_UPDATED, {
-            userId: reqDetails.actorUserId,
-            entityName: 'Listing',
-            entityId: finalListing.id,
-            oldValues: currentListing,
-            newValues: finalListing,
-            description: `Listing '${finalListing.name || finalListing.id}' updated.`,
-            ipAddress: reqDetails.ipAddress,
-            userAgent: reqDetails.userAgent,
-    });
-
-    return finalListing;
+    // Return simple success response without data
+    return true;
 },
+
 
   async deleteListing(id, reqDetails = {}) {
     const listingId = parseInt(id, 10);
@@ -698,7 +1235,22 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     
     const deletedListing = await prisma.listing.delete({ where: { id: listingId } });
 
-   
+    // Clear Redis cache
+    if (redisClient.isReady) {
+        try {
+            await redisClient.del(cacheKeys.listingAr(listingId));
+            
+            // Clear all listings cache
+            const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
+            if (keys.length > 0) {
+                await redisClient.del(keys);
+            }
+            
+            console.log(`Redis: AR Cache - Deleted listing ${listingId} from cache`);
+        } catch (cacheError) {
+            console.error(`Redis: AR Cache - Error deleting listing ${listingId} ->`, cacheError.message);
+        }
+    }
 
     recordAuditLog(AuditLogAction.LISTING_DELETED, {
         userId: reqDetails.actorUserId,

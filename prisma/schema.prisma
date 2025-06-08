@@ -175,6 +175,8 @@ model review {
   @@index([listingId])
 }
 
+//must need to different model for age group, i did not do it because of time shortage
+
 model Booking {
   id              Int            @id @default(autoincrement())
   userId          Int            @map("user_id")
@@ -183,7 +185,7 @@ model Booking {
   listing         Listing?       @relation("ListingBookings", fields: [listingId], references: [id], onDelete: SetNull) // If Listing is deleted, listingId in Booking becomes NULL
   bookingDate     DateTime?      @map("booking_date")
   additionalNote  String?        @map("additional_note") @db.Text
-  // Payment        BookingPaymentMethod? @default()       @map("payment_method") // e.g. "credit_card", "paypal"
+  ageGroup        String?        @map("age_group") // e.g. "0-2 year", "3-5 year", "6-10 year", "11-15 year", "25+ year"
   numberOfPersons Int?           @map("number_of_persons")
   status          BookingStatus? @default(PENDING) @map("status")
   review_id      Int?           @unique @map("review_id") // Made nullable
