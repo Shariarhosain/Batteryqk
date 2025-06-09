@@ -292,6 +292,7 @@ Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => ite
     
     return newListingWithRelations;
 },
+
 async getAllListings(filters = {}, lang = "en") {
     const { page = 1, limit = 8, search, rating, ...otherFilters } = filters;
     const pageNum = parseInt(page, 10) || 1; // Add radix parameter and fallback
@@ -354,10 +355,34 @@ async getAllListings(filters = {}, lang = "en") {
         whereClause.location = { hasSome: locations };
     }
 
-    // Age group filter - exact match first
+    // Enhanced Age group filter - handle "25+ years" format
     if (otherFilters.agegroup && otherFilters.agegroup.length > 0) {
         const ageGroups = Array.isArray(otherFilters.agegroup) ? otherFilters.agegroup : [otherFilters.agegroup];
-        whereClause.agegroup = { hasSome: ageGroups };
+        
+        // Process age groups to handle "25+ years" format
+        const processedAgeGroups = [];
+        
+        ageGroups.forEach(ageGroup => {
+            const ageStr = ageGroup.toString().toLowerCase();
+            
+            // Handle "25+ years" or "25+" format
+            const plusMatch = ageStr.match(/(\d+)\+\s*years?/);
+            if (plusMatch) {
+                const minAge = parseInt(plusMatch[1]);
+                // Add common age range patterns that would include this minimum age
+                processedAgeGroups.push(ageGroup); // Keep original format
+                processedAgeGroups.push(`${minAge}+ year`); // Alternative format without 's'
+                processedAgeGroups.push(`${minAge}+ years`); // With 's'
+                
+                // Also check for ranges that include this age (e.g., "20-25 years" includes "25+")
+                // This will be handled in the similarity search if no exact matches
+            } else {
+                // Handle regular age ranges like "20-25 years"
+                processedAgeGroups.push(ageGroup);
+            }
+        });
+        
+        whereClause.agegroup = { hasSome: processedAgeGroups };
     }
 
     // Handle rating filter for exact matches
@@ -468,7 +493,7 @@ async getAllListings(filters = {}, lang = "en") {
             similarityScore: this.calculateIntelligentSimilarityScore(listing, filters)
         }));
 
-        const similarityThreshold = 0.4;
+        const similarityThreshold = 0.2; // Lowered threshold for age group matching
         
         const filteredScoredListings = scoredListings
             .filter(listing => listing.similarityScore > similarityThreshold)
@@ -635,12 +660,12 @@ calculateIntelligentSimilarityScore(listing, filters) {
         score += locationScore * 0.8;
     }
 
-    // Age group similarity
+    // Enhanced Age group similarity
     if (filters.agegroup) {
-        maxScore += 0.7;
+        maxScore += 0.9; // Increased weight for age group matching
         const filterAgeGroups = Array.isArray(filters.agegroup) ? filters.agegroup : [filters.agegroup];
         const ageScore = this.calculateAgeGroupSimilarity(filterAgeGroups, listing.agegroup || []);
-        score += ageScore * 0.7;
+        score += ageScore * 0.9;
     }
 
     // Price range similarity - reduce weight for price matching
@@ -683,22 +708,43 @@ calculateIntelligentSimilarityScore(listing, filters) {
     return maxScore > 0 ? Math.min(score / maxScore, 1) : 0;
 },
 
-// Calculate age group similarity with range overlap
+// Enhanced age group similarity with better "25+" handling
 calculateAgeGroupSimilarity(filterAgeGroups, listingAgeGroups) {
     if (!listingAgeGroups || listingAgeGroups.length === 0) return 0;
     
     const parseAgeRange = (ageStr) => {
-        const match = ageStr.match(/(\d+)(?:-(\d+))?\s*years?/i);
-        if (match) {
-            const min = parseInt(match[1]);
-            const max = match[2] ? parseInt(match[2]) : min;
-            return { min, max };
+        const cleanAgeStr = ageStr.toString().toLowerCase().trim();
+        
+        // Handle "25+ years" or "25+" format
+        const plusMatch = cleanAgeStr.match(/(\d+)\+\s*years?/);
+        if (plusMatch) {
+            const minAge = parseInt(plusMatch[1]);
+            return { min: minAge, max: 100, isPlus: true }; // Use 100 as upper bound for "+"
         }
+        
+        // Handle regular ranges like "20-25 years"
+        const rangeMatch = cleanAgeStr.match(/(\d+)[-–](\d+)\s*years?/);
+        if (rangeMatch) {
+            const min = parseInt(rangeMatch[1]);
+            const max = parseInt(rangeMatch[2]);
+            return { min, max, isPlus: false };
+        }
+        
+        // Handle single age like "25 years"
+        const singleMatch = cleanAgeStr.match(/(\d+)\s*years?/);
+        if (singleMatch) {
+            const age = parseInt(singleMatch[1]);
+            return { min: age, max: age, isPlus: false };
+        }
+        
         return null;
     };
 
     const filterRanges = filterAgeGroups.map(parseAgeRange).filter(Boolean);
-    const listingRanges = listingAgeGroups.map(parseAgeRange).filter(Boolean);
+    const listingRanges = listingAgeGroups.flatMap(ageGroupStr => {
+        // Handle comma-separated age groups like "12-16 years, 20-25 years,30+ years"
+        return ageGroupStr.split(',').map(ageStr => parseAgeRange(ageStr.trim())).filter(Boolean);
+    });
     
     if (filterRanges.length === 0 || listingRanges.length === 0) return 0;
 
@@ -706,16 +752,44 @@ calculateAgeGroupSimilarity(filterAgeGroups, listingAgeGroups) {
     
     filterRanges.forEach(filterRange => {
         listingRanges.forEach(listingRange => {
-            // Calculate overlap
-            const overlapStart = Math.max(filterRange.min, listingRange.min);
-            const overlapEnd = Math.min(filterRange.max, listingRange.max);
+            let similarity = 0;
             
-            if (overlapStart <= overlapEnd) {
-                const overlapSize = overlapEnd - overlapStart + 1;
-                const filterSize = filterRange.max - filterRange.min + 1;
-                const similarity = overlapSize / filterSize;
-                bestScore = Math.max(bestScore, similarity);
+            // Special handling for "+" ranges
+            if (filterRange.isPlus && listingRange.isPlus) {
+                // Both are "+" ranges - check if they overlap
+                const overlapStart = Math.max(filterRange.min, listingRange.min);
+                if (overlapStart <= Math.min(filterRange.max, listingRange.max)) {
+                    similarity = 1.0; // Perfect match for overlapping "+" ranges
+                }
+            } else if (filterRange.isPlus) {
+                // Filter is "+" range, listing is regular range
+                if (listingRange.max >= filterRange.min) {
+                    // If listing's max age is >= filter's min age, it's a match
+                    const overlap = Math.min(listingRange.max, filterRange.max) - Math.max(listingRange.min, filterRange.min) + 1;
+                    const listingSize = listingRange.max - listingRange.min + 1;
+                    similarity = Math.max(0, overlap) / listingSize;
+                }
+            } else if (listingRange.isPlus) {
+                // Listing is "+" range, filter is regular range
+                if (filterRange.max >= listingRange.min) {
+                    // If filter's max age is >= listing's min age, it's a match
+                    const overlap = Math.min(filterRange.max, listingRange.max) - Math.max(filterRange.min, listingRange.min) + 1;
+                    const filterSize = filterRange.max - filterRange.min + 1;
+                    similarity = Math.max(0, overlap) / filterSize;
+                }
+            } else {
+                // Both are regular ranges
+                const overlapStart = Math.max(filterRange.min, listingRange.min);
+                const overlapEnd = Math.min(filterRange.max, listingRange.max);
+                
+                if (overlapStart <= overlapEnd) {
+                    const overlapSize = overlapEnd - overlapStart + 1;
+                    const filterSize = filterRange.max - filterRange.min + 1;
+                    similarity = overlapSize / filterSize;
+                }
             }
+            
+            bestScore = Math.max(bestScore, similarity);
         });
     });
     
@@ -916,8 +990,6 @@ calculateStringSimilarity(str1, str2) {
     const maxLen = Math.max(len1, len2);
     return maxLen === 0 ? 1 : (maxLen - distance) / maxLen;
 },
-
-
 
 
 
