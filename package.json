@@ -6,8 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/app.js",
-    "dev": "nodemon src/app.js",
-     "postinstall": "prisma generate"
+    "dev": "nodemon src/app.js"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +23,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.0",
     "nodemailer": "^7.0.3",
+    "prisma": "^6.9.0",
     "redis": "^5.1.1",
     "uuid": "^11.1.0"
   }
