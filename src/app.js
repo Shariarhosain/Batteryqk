@@ -10,6 +10,7 @@ dotenv.config();
 import userRouter from './routers/userRouter.js';
 import categoryRouter from './routers/categoryRouter.js';
 import listingRouter from './routers/listingRouter.js';
+import BookingRouter from './routers/bookingRouter.js'; // If you have a booking router, import it here
 
 // Import Middlewares
 import errorHandler from './middlewares/errorHandler.js';
@@ -70,6 +71,7 @@ app.get('/', (req, res) => {
 app.use('/api/users', userRouter);
 app.use('/api/categories', categoryRouter);
 app.use('/api/listings', listingRouter);
+app.use('/api/bookings', BookingRouter); // If you have a booking router, use it here
 
 // if other  mean which i not declare then say hi hackers
 app.use((req, res) => {

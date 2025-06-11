@@ -15,8 +15,8 @@ const deeplClient = new deepl.DeepLClient(authKey);
 
 const SALT_ROUNDS = 10;
 const REDIS_URL = process.env.REDIS_URL;
-const AR_CACHE_EXPIRATION = 60 * 60 * 24 * 30; // 30 days for AR user data
-const AR_NOTIFICATION_CACHE_EXPIRATION = 60 * 60 * 24 * 30; // 30 days for AR notifications
+const AR_CACHE_EXPIRATION = 0;
+const AR_NOTIFICATION_CACHE_EXPIRATION = 0;
 const AR_NOTIFICATION_LIST_MAX_LENGTH = 10000;
 
 const redisClient = createClient({

@@ -17,7 +17,7 @@ const deeplClient = DEEPL_AUTH_KEY !== "YOUR_DEEPL_AUTH_KEY_HERE" ? new deepl.Tr
 
 // --- Redis Configuration ---
 const REDIS_URL = process.env.REDIS_URL || "redis://default:YOUR_REDIS_PASSWORD@YOUR_REDIS_HOST:PORT";
-const AR_CACHE_EXPIRATION = 60 * 60 * 24 * 30; // 30 days
+const AR_CACHE_EXPIRATION = 0;
 
 const redisClient = createClient({
     url: REDIS_URL,
@@ -46,17 +46,25 @@ const cacheKeys = {
 
 // --- Helper Functions ---
 async function translateText(text, targetLang, sourceLang = null) {
-    if (!deeplClient || !text || typeof text !== 'string') {
+    if (!deeplClient) {
+        console.warn("DeepL client is not initialized.");
         return text;
     }
+
+    if (!text || typeof text !== 'string') {
+        return text;
+    }
+
     try {
         const result = await deeplClient.translateText(text, sourceLang, targetLang);
+        console.log(`Translated: "${text}" => "${result.text}"`);
         return result.text;
     } catch (error) {
         console.error(`DeepL Translation error: ${error.message}`);
         return text;
     }
 }
+
 
 async function translateArrayFields(arr, targetLang, sourceLang = null) {
     if (!arr || !Array.isArray(arr)) return arr;
@@ -65,59 +73,70 @@ async function translateArrayFields(arr, targetLang, sourceLang = null) {
 
 async function translateListingFields(listing, targetLang, sourceLang = null) {
     if (!listing) return listing;
-    
+
     const translatedListing = { ...listing };
-    
-    // Translate text fields
-    if (listing.name) {
+
+    // Translate basic text fields
+    if (listing.name)
         translatedListing.name = await translateText(listing.name, targetLang, sourceLang);
-    }
-    if (listing.description) {
+
+    if (listing.description)
         translatedListing.description = await translateText(listing.description, targetLang, sourceLang);
-    }
-    
+
     // Translate array fields
-    if (listing.agegroup) {
-        translatedListing.agegroup = await translateArrayFields(listing.agegroup, targetLang, sourceLang);
+    const arrayFields = ['agegroup', 'location', 'facilities', 'operatingHours'];
+    for (const field of arrayFields) {
+        if (Array.isArray(listing[field])) // Ensure it's an array
+            translatedListing[field] = await translateArrayFields(listing[field], targetLang, sourceLang);
     }
-    if (listing.location) {
-        translatedListing.location = await translateArrayFields(listing.location, targetLang, sourceLang);
+
+    // Translate categories
+    const categoryFields = ['selectedMainCategories', 'selectedSubCategories', 'selectedSpecificItems'];
+    for (const field of categoryFields) {
+        if (Array.isArray(listing[field])) {
+            translatedListing[field] = await Promise.all(
+                listing[field].map(async (item) => ({
+                    ...item,
+                    name: await translateText(item.name, targetLang, sourceLang)
+                }))
+            );
+        }
     }
-    if (listing.facilities) {
-        translatedListing.facilities = await translateArrayFields(listing.facilities, targetLang, sourceLang);
-    }
-    if (listing.operatingHours) {
-        translatedListing.operatingHours = await translateArrayFields(listing.operatingHours, targetLang, sourceLang);
-    }
-    
-    // Translate category data if present
-    if (listing.selectedMainCategories) {
-        translatedListing.selectedMainCategories = await Promise.all(
-            listing.selectedMainCategories.map(async (cat) => ({
-                ...cat,
-                name: await translateText(cat.name, targetLang, sourceLang)
+
+    // Translate reviews
+    if (Array.isArray(listing.reviews)) {
+        translatedListing.reviews = await Promise.all(
+            listing.reviews.map(async (review) => ({
+                ...review,
+                comment: await translateText(review.comment, targetLang, sourceLang),
+                status: await translateText(review.status, targetLang, sourceLang),
+                // DO NOT translate user's proper names. Preserve them.
+                user: review.user 
             }))
         );
     }
-    if (listing.selectedSubCategories) {
-        translatedListing.selectedSubCategories = await Promise.all(
-            listing.selectedSubCategories.map(async (cat) => ({
-                ...cat,
-                name: await translateText(cat.name, targetLang, sourceLang)
-            }))
-        );
-    }
-    if (listing.selectedSpecificItems) {
-        translatedListing.selectedSpecificItems = await Promise.all(
-            listing.selectedSpecificItems.map(async (item) => ({
-                ...item,
-                name: await translateText(item.name, targetLang, sourceLang)
+
+    // Translate bookings
+    if (Array.isArray(listing.bookings)) {
+        translatedListing.bookings = await Promise.all(
+            listing.bookings.map(async (booking) => ({
+                ...booking,
+                additionalNote: await translateText(booking.additionalNote, targetLang, sourceLang),
+                ageGroup: await translateText(booking.ageGroup, targetLang, sourceLang),
+                status: await translateText(booking.status, targetLang, sourceLang),
+                booking_hours: booking.booking_hours
+                    ? await translateText(booking.booking_hours, targetLang, sourceLang)
+                    : null,
+                // DO NOT translate user's proper names. Preserve them.
+                user: await translateText(booking.user.fname, targetLang, sourceLang) + ' ' + await translateText(booking.user.lname, targetLang, sourceLang),
+                PaymentStatus: booking.PaymentStatus ? await translateText(booking.PaymentStatus, targetLang, sourceLang) : null
             }))
         );
     }
     
     return translatedListing;
 }
+
 
 function createFilterHash(filters) {
     const sortedFilters = Object.keys(filters).sort().reduce((result, key) => {
@@ -403,7 +422,7 @@ async getAllListings(filters = {}, lang = "en") {
                     select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
                 },
                 bookings: {
-                    select: { id: true, status: true, createdAt: true }
+                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, PaymentStatus: true }
                 }
             },
             orderBy: { id: 'asc' }
@@ -451,12 +470,12 @@ async getAllListings(filters = {}, lang = "en") {
                 selectedSubCategories: true,
                 selectedSpecificItems: true,
                 reviews: {
-                    where: { status: 'ACCEPTED' },
-                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-                },
-                bookings: {
-                    select: { id: true, status: true, createdAt: true }
-                }
+                where: { status: 'ACCEPTED' },
+                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+            },
+            bookings: {
+                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, PaymentStatus: true }
+            }
             },
             orderBy: { id: 'asc' },
             skip: offset,
@@ -477,12 +496,12 @@ async getAllListings(filters = {}, lang = "en") {
                 selectedSubCategories: true,
                 selectedSpecificItems: true,
                 reviews: {
-                    where: { status: 'ACCEPTED' },
-                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-                },
-                bookings: {
-                    select: { id: true, status: true, createdAt: true }
-                }
+                where: { status: 'ACCEPTED' },
+                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+            },
+            bookings: {
+                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, PaymentStatus: true }
+            }
             },
             orderBy: { id: 'asc' }
         });
@@ -1011,6 +1030,7 @@ calculateStringSimilarity(str1, str2) {
                     return parsed;
                 }
             }
+            console.log(`Redis: AR Cache - No valid cache found for listing ${listingId}`);
         } catch (cacheError) {
             console.error(`Redis: AR Cache - Error fetching listing ${listingId} ->`, cacheError.message);
         }
@@ -1025,13 +1045,15 @@ calculateStringSimilarity(str1, str2) {
             selectedSpecificItems: true,
             reviews: {
                 where: { status: 'ACCEPTED' },
-                select: { rating: true } // Only need rating for calculation
+                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
             },
             bookings: {
-                select: { status: true } // Only need status for calculation
+                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, PaymentStatus: true }
             }
         }
     });
+
+    console.log(listing);
 
     if (!listing) return null;
 
@@ -1211,15 +1233,15 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
                     selectedMainCategories: true,
                     selectedSubCategories: true,
                     selectedSpecificItems: true,
-                    reviews: {
-                        where: { status: 'ACCEPTED' },
-                        select: { rating: true }
-                    },
-                    bookings: {
-                        select: { status: true }
-                    }
-                }
-            });
+                   reviews: {
+                where: { status: 'ACCEPTED' },
+                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+            },
+            bookings: {
+                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, PaymentStatus: true }
+            }
+        }
+        });
 
             // Calculate stats
             const acceptedReviews = finalListing.reviews;
