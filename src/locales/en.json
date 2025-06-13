@@ -39,5 +39,15 @@
   "listings_retrieved": "Listings retrieved successfully.",
   "invalid_listing_id": "Invalid listing ID.",
   "error_listing_not_found": "Listing not found.",
-  "listing_retrieved": "Listing retrieved successfully."
+  "listing_retrieved": "Listing retrieved successfully.",
+  "booking_created": "Booking created successfully.",
+  "booking_updated": "Booking updated successfully.",
+  "user_bookings_retrieved": "User bookings retrieved successfully.",
+  "booking_not_found": "Booking not found.",
+  "invalid_booking_id": "Invalid booking ID.",
+  "error_booking_not_found": "Booking not found.",
+  "booking_deleted": "Booking deleted successfully.",
+  "booking_deleted_error": "Error deleting booking.",
+  "bookings_retrieved": "Bookings retrieved successfully.",
+  "booking_retrieved": "Booking retrieved successfully."
 }

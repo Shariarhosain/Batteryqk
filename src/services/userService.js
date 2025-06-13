@@ -15,9 +15,9 @@ const deeplClient = new deepl.DeepLClient(authKey);
 
 const SALT_ROUNDS = 10;
 const REDIS_URL = process.env.REDIS_URL;
-const AR_CACHE_EXPIRATION = 0;
-const AR_NOTIFICATION_CACHE_EXPIRATION = 0;
-const AR_NOTIFICATION_LIST_MAX_LENGTH = 10000;
+const AR_CACHE_EXPIRATION = 365 * 24 * 60 * 60; // 365 days in seconds
+const AR_NOTIFICATION_CACHE_EXPIRATION = 365 * 24 * 60 * 60; // 365 days in seconds
+const AR_NOTIFICATION_LIST_MAX_LENGTH = 1000000;
 
 const redisClient = createClient({
   url: REDIS_URL,
@@ -128,20 +128,59 @@ const userService = {
         uid: true,
         createdAt: true,
         updatedAt: true,
+        rewards: {
+          select: {
+            points: true,
+            category: true,
+          },
+        },
       },
     });
 
+    // Calculate reward info for consistency with getAllUsers
+    const totalRewardPoints = allinfo.rewards.reduce((sum, reward) => sum + (reward.points || 0), 0);
+    const categories = allinfo.rewards.map(reward => reward.category).filter(Boolean);
+    const categoryHierarchy = { BRONZE: 1, SILVER: 2, GOLD: 3, PLATINUM: 4 };
+    const highestCategory = categories.length > 0 
+      ? categories.reduce((highest, current) => 
+          categoryHierarchy[current] > categoryHierarchy[highest] ? current : highest
+        ) 
+      : 'BRONZE';
+
+    const { rewards, ...userWithoutRewards } = allinfo;
+    const userWithRewards = { ...userWithoutRewards, totalRewardPoints, highestRewardCategory: highestCategory };
+
     // --- User AR Cache ---
-    if (lang === "ar" && redisClient.isReady) {
+    if (redisClient.isReady) {
       try {
-        // newUserInDb has EN names, originalFname/Lname are AR
-        const userForArCache = createUserObjectWithNames(allinfo, originalFname, originalLname);
-        await redisClient.setEx(cacheKeys.userAr(allinfo.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
-        await redisClient.setEx(cacheKeys.userByUidAr(allinfo.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
-        console.log(`Redis: AR Cache - Cached new user AR (ID: ${allinfo.id}) with original AR names.`);
+        if (lang === "ar") {
+          // For AR, cache with original AR names and translated reward category
+          let arRewardCategory = highestCategory;
+          try {
+            if (highestCategory) {
+              arRewardCategory = (await deeplClient.translateText(highestCategory, "en", "ar")).text;
+            }
+          } catch (translateError) {
+            console.error(`DeepL: Error translating reward category ${highestCategory} for new user ${allinfo.id}:`, translateError.message);
+          }
+
+          const userForArCache = { 
+            ...createUserObjectWithNames(userWithRewards, originalFname, originalLname),
+            totalRewardPoints,
+            highestRewardCategory: arRewardCategory
+          };
+          
+          await redisClient.setEx(cacheKeys.userAr(allinfo.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
+          await redisClient.setEx(cacheKeys.userByUidAr(allinfo.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
+          console.log(`Redis: AR Cache - Cached new user AR (ID: ${allinfo.id}) with original AR names and rewards.`);
+        }
+        
+        // Always invalidate all-users cache when a new user is created
         await redisClient.del(cacheKeys.allUsersAr());
         console.log(`Redis: AR Cache - Invalidated ${cacheKeys.allUsersAr()}`);
-      } catch (cacheError) { console.error("Redis: AR Cache - User caching error (createUser) ->", cacheError.message); }
+      } catch (cacheError) { 
+        console.error("Redis: AR Cache - User caching error (createUser) ->", cacheError.message); 
+      }
     }
 
     // --- Notification (DB is EN, Redis AR if lang=ar) ---
@@ -189,7 +228,7 @@ const userService = {
       });
     } catch (e) { console.error(`Audit log error (createUser ${newUserInDb.id}): ${e.message}`); }
 
-    const { password: _, ...userToReturn } = newUserInDb; // Return EN version from DB
+    const { password: _, ...userToReturn } = userWithRewards; // Return with rewards info
     
     // If this was an AR registration, return the original AR names instead of English DB names
     if (lang === 'ar' && (originalFname || originalLname)) {
@@ -198,76 +237,169 @@ const userService = {
     }
     
     return userToReturn;
-    
   },
 
   // ... rest of the userService methods (getAllUsers, getUserById, etc.)
-   async getAllUsers(lang = "en") {
-
+  async getAllUsers(lang = "en") {
     const allUsers = await prisma.user.findMany({
       select: {
         id: true,
-            email: true,
+        email: true,
         fname: true,
         lname: true,
-     
         uid: true,
         createdAt: true,
         updatedAt: true,
+        rewards: {
+          select: {
+            points: true,
+            category: true,
+          },
+        },
       },
     });
 
-    // If the request is for AR, translate names
+    // Calculate total reward points and highest category for each user
+    const usersWithRewards = allUsers.map(user => {
+      const totalRewardPoints = user.rewards.reduce((sum, reward) => sum + (reward.points || 0), 0);
+      const categories = user.rewards.map(reward => reward.category).filter(Boolean);
+      const categoryHierarchy = { BRONZE: 1, SILVER: 2, GOLD: 3, PLATINUM: 4 };
+      const highestCategory = categories.length > 0 
+        ? categories.reduce((highest, current) => 
+            categoryHierarchy[current] > categoryHierarchy[highest] ? current : highest
+          ) 
+        : 'BRONZE';
+      
+      const { rewards, ...userWithoutRewards } = user;
+      return { ...userWithoutRewards, totalRewardPoints, highestRewardCategory: highestCategory };
+    });
+
+    // If the request is for AR, translate names and categories
     if (lang === "ar") {
-     //get from cache first
+      // Get from cache first
       if (redisClient.isReady) {
         try {
           const cachedUsers = await redisClient.get(cacheKeys.allUsersAr());
           if (cachedUsers) {
-            return JSON.parse(cachedUsers);
+            const parsedCachedUsers = JSON.parse(cachedUsers);
+            
+            // Validate cache against current data for rewards/categories
+            let cacheValid = true;
+            if (parsedCachedUsers.length === usersWithRewards.length) {
+              for (let i = 0; i < usersWithRewards.length; i++) {
+                const currentUser = usersWithRewards[i];
+                const cachedUser = parsedCachedUsers.find(cu => cu.id === currentUser.id);
+                
+                if (!cachedUser || 
+                    cachedUser.totalRewardPoints !== currentUser.totalRewardPoints || 
+                    cachedUser.highestRewardCategory !== currentUser.highestRewardCategory) {
+                  cacheValid = false;
+                  break;
+                }
+              }
+            } else {
+              cacheValid = false;
+            }
+            
+            if (cacheValid) {
+              return parsedCachedUsers;
+            } else {
+              console.log(`Redis: AR Cache - Cache invalidated due to reward/category changes, deleting cache.`);
+              await redisClient.del(cacheKeys.allUsersAr());
+            }
           }
         } catch (cacheError) {
           console.error("Redis: AR Cache - Error fetching all users from cache ->", cacheError.message);
         }
       }
-  console.log(`Redis: AR Cache - No cache found for all users, translating names...`);
-      // If not cached, translate names and cache the result
-      const translatedUsers = await Promise.all(allUsers.map(async (user) => {
-        const arFname = user.fname ? (await deeplClient.translateText(user.fname, "en", "ar")).text : '';
-        const arLname = user.lname ? (await deeplClient.translateText(user.lname, "en", "ar")).text : '';
-        const userForArCache = createUserObjectWithNames(user, arFname, arLname);
-        
-        // Cache each user individually
-        await redisClient.setEx(cacheKeys.userAr(user.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
-        await redisClient.setEx(cacheKeys.userByUidAr(user.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
-        
-        return userForArCache;
-      }));
+      
+      console.log(`Redis: AR Cache - No cache found for all users, translating names...`);
+      
+      // If not cached, translate names and cache the result (process sequentially to avoid rate limits)
+      const translatedUsers = [];
+      for (const user of usersWithRewards) {
+        try {
+          const arFname = user.fname ? (await deeplClient.translateText(user.fname, "en", "ar")).text : '';
+          const arLname = user.lname ? (await deeplClient.translateText(user.lname, "en", "ar")).text : '';
+          
+          // Translate reward category to Arabic
+          let arRewardCategory = user.highestRewardCategory;
+          try {
+            if (user.highestRewardCategory) {
+              arRewardCategory = (await deeplClient.translateText(user.highestRewardCategory, "en", "ar")).text;
+            }
+          } catch (translateError) {
+            console.error(`DeepL: Error translating reward category ${user.highestRewardCategory} for user ${user.id}:`, translateError.message);
+          }
+          
+          const userForArCache = { 
+            ...createUserObjectWithNames(user, arFname, arLname),
+            totalRewardPoints: user.totalRewardPoints,
+            highestRewardCategory: arRewardCategory
+          };
+          
+          // Cache each user individually
+          if (redisClient.isReady) {
+            await redisClient.setEx(cacheKeys.userAr(user.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
+            await redisClient.setEx(cacheKeys.userByUidAr(user.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
+          }
+          
+          translatedUsers.push(userForArCache);
+          
+          // Add a small delay between translations to respect rate limits
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (translateError) {
+          console.error(`DeepL: Error translating user ${user.id}:`, translateError.message);
+          // Fallback: use original English names if translation fails
+          const userForArCache = { 
+            ...createUserObjectWithNames(user, user.fname, user.lname),
+            totalRewardPoints: user.totalRewardPoints,
+            highestRewardCategory: user.highestRewardCategory
+          };
+          translatedUsers.push(userForArCache);
+        }
+      }
 
       // Cache the entire list
       await redisClient.setEx(cacheKeys.allUsersAr(), AR_CACHE_EXPIRATION, JSON.stringify(translatedUsers));
-      console.log(`Redis: AR Cache - Cached all users list with AR names.`);
+      console.log(`Redis: AR Cache - Cached all users list with AR names and reward categories.`);
       
       return translatedUsers;
     }
 
-    return allUsers;
+    return usersWithRewards;
   },
 
   // ... getUserById, getUserByUid, etc.
   async getUserById(id, lang = "en") {
     const user = await prisma.user.findUnique({ where: { id: parseInt(id, 10) }, select: {
       id: true,
-            email: true,
+      email: true,
       fname: true,
       lname: true,
       uid: true,
       createdAt: true,
       updatedAt: true,
+      rewards: {
+        select: {
+          points: true,
+          category: true,
+        },
+      },
     }
    });
-   
+
     if (!user) return null;
+
+    // Calculate total reward points and highest category
+    const totalRewardPoints = user.rewards.reduce((sum, reward) => sum + (reward.points || 0), 0);
+    const categories = user.rewards.map(reward => reward.category).filter(Boolean);
+    const categoryHierarchy = { BRONZE: 1, SILVER: 2, GOLD: 3, PLATINUM: 4 };
+    const highestCategory = categories.length > 0 
+      ? categories.reduce((highest, current) => 
+          categoryHierarchy[current] > categoryHierarchy[highest] ? current : highest
+        ) 
+      : 'BRONZE';
 
     // If the request is for AR, translate names
     if (lang === "ar") {
@@ -277,7 +409,18 @@ const userService = {
         try {
           const cachedUser = await redisClient.get(cacheKeys.userAr(user.id));
           console.log(`Redis: AR Cache - Attempting to fetch user ${user.id} from cache.`);
-          if (cachedUser) return JSON.parse(cachedUser);
+          if (cachedUser) {
+            const parsedCachedUser = JSON.parse(cachedUser);
+            
+            // Validate cache against current reward data
+            if (parsedCachedUser.totalRewardPoints === totalRewardPoints && 
+                parsedCachedUser.highestRewardCategory === highestCategory) {
+              return parsedCachedUser;
+            } else {
+              console.log(`Redis: AR Cache - Cache invalidated for user ${user.id} due to reward/category changes, deleting cache.`);
+              await redisClient.del([cacheKeys.userAr(user.id), cacheKeys.userByUidAr(user.uid), cacheKeys.allUsersAr()]);
+            }
+          }
         } catch (cacheError) {
           console.error("Redis: AR Cache - Error fetching user from cache ->", cacheError.message);
         }
@@ -286,7 +429,14 @@ const userService = {
       // If not cached, translate names and cache the result
       const arFname = user.fname ? (await deeplClient.translateText(user.fname, "en", "ar")).text : '';
       const arLname = user.lname ? (await deeplClient.translateText(user.lname, "en", "ar")).text : '';
-      const userForArCache = createUserObjectWithNames(user, arFname, arLname);
+      const arRewardCategory = highestCategory ? (await deeplClient.translateText(highestCategory, "en", "ar")).text : '';
+
+      const { rewards, ...userWithoutRewards } = user;
+      const userForArCache = { 
+        ...createUserObjectWithNames(userWithoutRewards, arFname, arLname),
+        totalRewardPoints,
+        highestRewardCategory: arRewardCategory
+      };
 
       await redisClient.setEx(cacheKeys.userAr(user.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
       await redisClient.setEx(cacheKeys.userByUidAr(user.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
@@ -295,26 +445,13 @@ const userService = {
       return userForArCache;
     }
 
-    const { password: _, ...userWithoutPassword } = user; // Exclude password from the returned object
+    const { password: _, rewards, ...userWithoutPassword } = user;
+    userWithoutPassword.totalRewardPoints = totalRewardPoints;
+    userWithoutPassword.highestRewardCategory = highestCategory;
     return userWithoutPassword;
   },
 
   async getUserByUid(uid, lang = "en") {
-    // Cache lookup for AR version
-    if (lang === "ar" && redisClient.isReady) {
-        try {
-            console.log(`Redis: AR Cache - Attempting to fetch user by UID ${uid} from cache using key ${cacheKeys.userByUidAr(uid)}.`);
-            const cachedUser = await redisClient.get(cacheKeys.userByUidAr(uid)); // Corrected to use userByUidAr with the input uid
-            if (cachedUser) {
-                console.log(`Redis: AR Cache - Found user by UID ${uid} in cache.`);
-                return JSON.parse(cachedUser);
-            }
-            console.log(`Redis: AR Cache - User by UID ${uid} not found in cache.`);
-        } catch (cacheError) {
-            console.error(`Redis: AR Cache - Error fetching user by UID ${uid} from cache ->`, cacheError.message);
-        }
-    }
-
     const user = await prisma.user.findUnique({ where: { uid }, select: {
       id: true,
       email: true,
@@ -323,18 +460,65 @@ const userService = {
       uid: true,
       createdAt: true,
       updatedAt: true,
+      rewards: {
+        select: {
+          points: true,
+          category: true,
+        },
+      },
     }});
+    
     if (!user) return null;
+
+    // Calculate total reward points and highest category
+    const totalRewardPoints = user.rewards.reduce((sum, reward) => sum + (reward.points || 0), 0);
+    const categories = user.rewards.map(reward => reward.category).filter(Boolean);
+    const categoryHierarchy = { BRONZE: 1, SILVER: 2, GOLD: 3, PLATINUM: 4 };
+    const highestCategory = categories.length > 0 
+      ? categories.reduce((highest, current) => 
+          categoryHierarchy[current] > categoryHierarchy[highest] ? current : highest
+        ) 
+      : 'BRONZE';
+
+    // Cache lookup for AR version
+    if (lang === "ar" && redisClient.isReady) {
+        try {
+            console.log(`Redis: AR Cache - Attempting to fetch user by UID ${uid} from cache using key ${cacheKeys.userByUidAr(uid)}.`);
+            const cachedUser = await redisClient.get(cacheKeys.userByUidAr(uid));
+            if (cachedUser) {
+                const parsedCachedUser = JSON.parse(cachedUser);
+                
+                // Validate cache against current reward data
+                if (parsedCachedUser.totalRewardPoints === totalRewardPoints && 
+                    parsedCachedUser.highestRewardCategory === highestCategory) {
+                    console.log(`Redis: AR Cache - Found user by UID ${uid} in cache.`);
+                    return parsedCachedUser;
+                } else {
+                    console.log(`Redis: AR Cache - Cache invalidated for user by UID ${uid} due to reward/category changes, deleting cache.`);
+                    await redisClient.del([cacheKeys.userAr(user.id), cacheKeys.userByUidAr(uid), cacheKeys.allUsersAr()]);
+                }
+            }
+            console.log(`Redis: AR Cache - User by UID ${uid} not found in cache.`);
+        } catch (cacheError) {
+            console.error(`Redis: AR Cache - Error fetching user by UID ${uid} from cache ->`, cacheError.message);
+        }
+    }
 
     if (lang === "ar") {
         // If not cached, translate names and cache the result
         const arFname = user.fname ? (await deeplClient.translateText(user.fname, "en", "ar")).text : '';
         const arLname = user.lname ? (await deeplClient.translateText(user.lname, "en", "ar")).text : '';
-        const userForArCache = createUserObjectWithNames(user, arFname, arLname);
+        const arRewardCategory = highestCategory ? (await deeplClient.translateText(highestCategory, "en", "ar")).text : '';
 
-        if (redisClient.isReady) { // Check again before writing
+        const { rewards, ...userWithoutRewards } = user;
+        const userForArCache = { 
+          ...createUserObjectWithNames(userWithoutRewards, arFname, arLname),
+          totalRewardPoints,
+          highestRewardCategory: arRewardCategory
+        };
+
+        if (redisClient.isReady) {
             try {
-                // Cache by both ID and UID for AR version
                 await redisClient.setEx(cacheKeys.userAr(user.id), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
                 await redisClient.setEx(cacheKeys.userByUidAr(user.uid), AR_CACHE_EXPIRATION, JSON.stringify(userForArCache));
                 console.log(`Redis: AR Cache - Cached user ${user.id} (UID: ${user.uid}) with AR names after DB lookup.`);
@@ -345,8 +529,29 @@ const userService = {
         return userForArCache;
     }
 
-    const { password: _, ...userWithoutPassword } = user;
+    const { password: _, rewards, ...userWithoutPassword } = user;
+    userWithoutPassword.totalRewardPoints = totalRewardPoints;
+    userWithoutPassword.highestRewardCategory = highestCategory;
     return userWithoutPassword;
+  },
+
+  // Helper function to invalidate user AR cache when rewards are updated
+  async invalidateUserArCache(userId) {
+    if (redisClient.isReady) {
+      try {
+        const user = await prisma.user.findUnique({ where: { id: userId }, select: { uid: true } });
+        if (user) {
+          await redisClient.del([
+            cacheKeys.userAr(userId),
+            cacheKeys.userByUidAr(user.uid),
+            cacheKeys.allUsersAr()
+          ]);
+          console.log(`Redis: AR Cache - Invalidated AR cache for user ${userId} due to reward changes.`);
+        }
+      } catch (error) {
+        console.error(`Redis: AR Cache - Error invalidating cache for user ${userId}:`, error.message);
+      }
+    }
   },
 
   async updateUser(id, updateData, lang = "en", reqDetails = {}) {
@@ -494,14 +699,24 @@ async deleteUser(id, lang = "en", reqDetails = {}) {
   };
 
   let dbNotificationIds = [];
+  let userBookingIds = [];
+  let userListingIds = [];
   try {
     const notifications = await prisma.notification.findMany({
       where: { userId: userIdToDelete },
       select: { id: true },
     });
     dbNotificationIds = notifications.map(n => n.id.toString());
+
+    // Get user's bookings for cache cleanup
+    const userBookings = await prisma.booking.findMany({
+      where: { userId: userIdToDelete },
+      select: { id: true, listingId: true },
+    });
+    userBookingIds = userBookings.map(b => b.id);
+    userListingIds = [...new Set(userBookings.map(b => b.listingId))]; // unique listing IDs
   } catch (dbError) {
-    console.error(`DB: Error fetching notification IDs for user ${userIdToDelete} for cache cleanup:`, dbError.message);
+    console.error(`DB: Error fetching user data for cache cleanup for user ${userIdToDelete}:`, dbError.message);
   }
 
   // --- Perform the deletion from Database ---
@@ -560,8 +775,47 @@ async deleteUser(id, lang = "en", reqDetails = {}) {
       // Always attempt to delete the list key itself (user:${userId}:notifications_list:ar)
       await redisClient.del(userArNotificationsListKey);
       console.log(`Redis: AR Cache - Deleted AR notification list key ${userArNotificationsListKey} for user ${userIdToDelete}`);
+
+      // 3. Clear Booking-Related AR Caches
+      const bookingCacheKeysToDelete = [];
       
-      // 3. Invalidate All-Users AR Cache (Deletes the entire list, which is the standard way)
+      // Individual booking AR caches
+      if (userBookingIds.length > 0) {
+        userBookingIds.forEach(bookingId => {
+          bookingCacheKeysToDelete.push(`booking:${bookingId}:ar`);
+        });
+      }
+      
+      // User's bookings list cache
+      bookingCacheKeysToDelete.push(`user:${userToDelete.uid}:bookings:ar`);
+      
+      // User's notifications cache (booking service related)
+      bookingCacheKeysToDelete.push(`user:${userToDelete.uid}:notifications:ar`);
+      
+      // All bookings caches (pattern-based deletion)
+      try {
+        const allBookingsKeys = await redisClient.keys('bookings:all*:ar');
+        if (allBookingsKeys.length > 0) {
+          bookingCacheKeysToDelete.push(...allBookingsKeys);
+        }
+      } catch (keysError) {
+        console.error(`Redis: AR Cache - Error fetching all bookings cache keys for user ${userIdToDelete}:`, keysError.message);
+      }
+      
+      // Listing-related caches that need updating due to booking changes
+      if (userListingIds.length > 0) {
+        userListingIds.forEach(listingId => {
+          bookingCacheKeysToDelete.push(`listing:${listingId}:bookings:ar`);
+          bookingCacheKeysToDelete.push(`listing:${listingId}:ar`);
+        });
+      }
+      
+      if (bookingCacheKeysToDelete.length > 0) {
+        await redisClient.del(bookingCacheKeysToDelete);
+        console.log(`Redis: AR Cache - Deleted booking-related AR caches for user ${userIdToDelete}:`, bookingCacheKeysToDelete.length, 'keys');
+      }
+      
+      // 4. Invalidate All-Users AR Cache (Deletes the entire list, which is the standard way)
       await redisClient.del(cacheKeys.allUsersAr());
       console.log(`Redis: AR Cache - Invalidated all-users AR list cache: ${cacheKeys.allUsersAr()}`);
 

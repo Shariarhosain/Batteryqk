@@ -16,7 +16,7 @@ const REDIS_URL = process.env.REDIS_URL || "redis://default:YOUR_REDIS_PASSWORD@
 if (REDIS_URL.includes("YOUR_REDIS_PASSWORD") || REDIS_URL.includes("YOUR_REDIS_HOST")) {
     console.warn("Redis URL seems to contain placeholder values. Please configure process.env.REDIS_URL for AR caching.");
 }
-const AR_CACHE_EXPIRATION = 0;
+const AR_CACHE_EXPIRATION = 365 * 24 * 60 * 60; // 365 days in seconds
 
 const redisClient = createClient({
     url: REDIS_URL,

@@ -26,6 +26,17 @@ const PORT = process.env.PORT || 3000;
 // --- CRITICAL CONFIGURATION CHECKS ---
 let criticalConfigMissing = false;
 
+//allow all origins for CORS
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, X-JSON');
+  res.setHeader('Access-Control-Allow-Accept-Language', '*'); // Allow all languages
+  next();
+});
+
 if (!process.env.DATABASE_URL) {
   console.error("FATAL ERROR: DATABASE_URL is not set in .env file!");
   criticalConfigMissing = true;

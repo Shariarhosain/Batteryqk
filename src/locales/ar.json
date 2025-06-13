@@ -42,6 +42,16 @@
   "listings_retrieved": "تم استرجاع القوائم بنجاح.",
   "invalid_listing_id": "معرف القائمة غير صالح.",
   "error_listing_not_found": "القائمة غير موجودة.",
-  "listing_retrieved": "تم استرجاع القائمة بنجاح."
+  "listing_retrieved": "تم استرجاع القائمة بنجاح.",
+  "booking_created": "تم إنشاء الحجز بنجاح.",
+  "booking_updated": "تم تحديث الحجز بنجاح.",
+  "user_bookings_retrieved": "تم استرجاع حجوزات المستخدم بنجاح.",
+  "booking_not_found": "الحجز غير موجود.",
+  "invalid_booking_id": "معرف الحجز غير صالح.",
+  "error_booking_not_found": "الحجز غير موجود.",
+  "booking_deleted": "تم حذف الحجز بنجاح.",
+  "booking_deleted_error": "خطأ في حذف الحجز.",
+  "bookings_retrieved": "تم استرجاع الحجوزات بنجاح.",
+  "booking_retrieved": "تم استرجاع الحجز بنجاح."
 
 }
