@@ -13,4 +13,8 @@ router.get('/:id', categoryController.getCategoryById);
 router.put('/:id', categoryController.updateCategory);
 router.delete('/:id', categoryController.deleteCategory);
 
+// --- Granular DELETE Routes (Must be before general '/:id' routes) ---
+router.delete('/sub/:id', categoryController.deleteSubCategory);
+router.delete('/specific/:id', categoryController.deleteSpecificItem);
+
 export default router;

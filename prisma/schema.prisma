@@ -88,37 +88,40 @@ model User {
 
 
 model MainCategoryOption {
-  id        Int       @id @default(autoincrement())
-  name      String    @unique
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-   subCategories SubCategoryOption[] @relation("MainToSubCategoryOption")
+  id            Int                  @id @default(autoincrement())
+  name          String               @unique // A main category name should be globally unique. This is correct.
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+  subCategories SubCategoryOption[]  @relation("MainToSubCategoryOption")
   specificItems SpecificItemOption[] @relation("MainToSpecificItemOption")
-  listings  Listing[] @relation("ListingToMainCategoryOption")
+  listings      Listing[]            @relation("ListingToMainCategoryOption")
 }
 
 model SubCategoryOption {
-  id        Int       @id @default(autoincrement())
-  name      String    @unique 
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  listings  Listing[] @relation("ListingToSubCategoryOption")
-  mainCategoryId Int? @map("main_category_id") // Made nullable
-  mainCategory MainCategoryOption? @relation("MainToSubCategoryOption", fields: [mainCategoryId], references: [id], onDelete: SetNull) // If MainCategory is deleted, mainCategoryId in SubCategory becomes NULL
-  specificItems SpecificItemOption[] @relation("SubToSpecificItemOption")
+  id             Int                  @id @default(autoincrement())
+  name           String               // REMOVED @unique from here
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  listings       Listing[]            @relation("ListingToSubCategoryOption")
+  mainCategoryId Int?                 @map("main_category_id")
+  mainCategory   MainCategoryOption?  @relation("MainToSubCategoryOption", fields: [mainCategoryId], references: [id], onDelete: Cascade) // Changed to Cascade for easier deletion
+  specificItems  SpecificItemOption[] @relation("SubToSpecificItemOption")
+
+  @@unique([mainCategoryId, name]) // ADDED: Name is unique only within its main category.
 }
 
 model SpecificItemOption {
-  id        Int       @id @default(autoincrement())
-  name      String    @unique 
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  listings  Listing[] @relation("ListingToSpecificItemOption")
-  subCategoryId Int? @map("sub_category_id") // Made nullable
-  subCategory SubCategoryOption? @relation("SubToSpecificItemOption", fields: [subCategoryId], references: [id], onDelete: SetNull) // If SubCategory is deleted, subCategoryId in SpecificItem becomes NULL
-  mainCategoryId Int? @map("main_category_id") // Made nullable
-  mainCategory MainCategoryOption? @relation("MainToSpecificItemOption", fields: [mainCategoryId], references: [id], onDelete: SetNull) // If MainCategory is deleted, mainCategoryId in SpecificItem becomes NULL
+  id             Int                  @id @default(autoincrement())
+  name           String               // REMOVED @unique from here
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  listings       Listing[]            @relation("ListingToSpecificItemOption")
+  subCategoryId  Int?                 @map("sub_category_id")
+  subCategory    SubCategoryOption?   @relation("SubToSpecificItemOption", fields: [subCategoryId], references: [id], onDelete: Cascade) // Changed to Cascade
+  mainCategoryId Int?                 @map("main_category_id")
+  mainCategory   MainCategoryOption?  @relation("MainToSpecificItemOption", fields: [mainCategoryId], references: [id], onDelete: Cascade) // Changed to Cascade
 
+  @@unique([subCategoryId, name]) // ADDED: Name is unique only within its sub-category.
 }
 // model Category {
 //   id            Int       @id @default(autoincrement())

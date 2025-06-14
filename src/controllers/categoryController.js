@@ -76,27 +76,64 @@ const categoryController = {
     }
   },
 
-  async deleteCategory(req, res, next) {
+ // --- COMPLETE DELETE LOGIC ---
+
+    async deleteCategory(req, res, next) {
     const lang = getLanguage(req);
-    try {
-      const reqDetails = {
+        try {
+            const reqDetails = {
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         actorUserId: req.user?.id,
       };
-      // Pass lang and reqDetails to the service
-      const deletedCategory = await categoryService.deleteCategory(req.params.id, lang, reqDetails);
-      if (!deletedCategory) {
-        return res.status(404).json({ message: translate('category_not_found', lang) });
-      }
-      res.status(200).json({ 
-        message: translate('category_deleted', lang, { name: deletedCategory.mainCategory || deletedCategory.id }) 
-      });
-    } catch (error) {
-      console.error("Error in categoryController.deleteCategory:", error.message, error.stack);
-      next(error);
-    }
-  },
+            const deleted = await categoryService.deleteCategory(req.params.id, lang, reqDetails);
+            if (!deleted) {
+                return res.status(404).json({ message: lang === 'ar' ? `الفئة الرئيسية غير موجودة.` : `Main category not found.` });
+            }
+         
+            res.status(200).json({ message: lang === 'ar' ? `تم حذف الفئة الرئيسية  وجميع الفئات الفرعية المرتبطة بها.` : `Main category '${deleted.name}' and all associated sub-categories were deleted.` });
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async deleteSubCategory(req, res, next) {
+        try {
+            const lang = getLanguage(req);
+            const reqDetails = {
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent'],
+                actorUserId: req.user?.id,
+            };
+            const deleted = await categoryService.deleteSubCategory(req.params.id, lang, reqDetails);
+            if (!deleted) {
+                return res.status(404).json({ message: lang === 'ar' ? `الفئة الفرعية غير موجودة.` : `Sub-category not found.` });
+            }
+            res.status(200).json({ message: lang === 'ar' ? `تم حذف الفئة الفرعية.` : `Sub-category '${deleted.name}' was deleted.` });
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async deleteSpecificItem(req, res, next) {
+        try {
+            const lang = getLanguage(req);
+            const reqDetails = {
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent'],
+                actorUserId: req.user?.id,
+            };
+            const deleted = await categoryService.deleteSpecificItem(req.params.id, lang, reqDetails);
+            if (!deleted) {
+                return res.status(404).json({ message: lang === 'ar' ? `العنصر المحدد غير موجود.` : `Specific item not found.` });
+            }
+            res.status(200).json({ message: lang === 'ar' ? `تم حذف العنصر المحدد.` : `Specific item '${deleted.name}' was deleted.` });
+        } catch (error) {
+            next(error);
+        }
+    },
 };
+
+
 
 export default categoryController;
