@@ -5,7 +5,7 @@ import verifyToken from '../middlewares/verifyToken.js'; // Typically admin rout
 const router = express.Router();
 
 // These routes are usually for admin users
-// router.use(verifyToken); // Protect all category routes
+ router.use(verifyToken); // Protect all category routes
 
 router.post('/', categoryController.createCategory);
 router.get('/', categoryController.getAllCategories); // Can be public if needed, then move verifyToken per route
