@@ -7,8 +7,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 console.log(`Multer middleware initialized in directory: ${__dirname}`);
 
-// const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
-const UPLOAD_DIR = process.env.UPLOAD_DIR;
+ const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
+//const UPLOAD_DIR = process.env.UPLOAD_DIR;
 
 console.log(`Upload directory set to: ${UPLOAD_DIR}`);
 
