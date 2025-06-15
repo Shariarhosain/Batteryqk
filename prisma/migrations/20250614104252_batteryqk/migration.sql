@@ -11,7 +11,7 @@ CREATE TYPE "AuditLogAction" AS ENUM ('USER_REGISTERED', 'USER_LOGIN', 'USER_PRO
 CREATE TYPE "BookingPaymentMethod" AS ENUM ('PAID', 'UNPAID');
 
 -- CreateEnum
-CREATE TYPE "reviewStatus" AS ENUM ('ACCEPTED', 'REJECTED');
+CREATE TYPE "reviewStatus" AS ENUM ('ACCEPTED', 'REJECTED', 'PENDING');
 
 -- CreateEnum
 CREATE TYPE "reward_category" AS ENUM ('BRONZE', 'SILVER', 'GOLD', 'PLATINUM');
@@ -88,7 +88,7 @@ CREATE TABLE "review" (
     "user_id" INTEGER NOT NULL,
     "listing_id" INTEGER,
     "rating" INTEGER NOT NULL,
-    "status" "reviewStatus",
+    "status" "reviewStatus" DEFAULT 'PENDING',
     "comment" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -197,10 +197,10 @@ CREATE UNIQUE INDEX "User_user_id_key" ON "User"("user_id");
 CREATE UNIQUE INDEX "MainCategoryOption_name_key" ON "MainCategoryOption"("name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "SubCategoryOption_name_key" ON "SubCategoryOption"("name");
+CREATE UNIQUE INDEX "SubCategoryOption_main_category_id_name_key" ON "SubCategoryOption"("main_category_id", "name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "SpecificItemOption_name_key" ON "SpecificItemOption"("name");
+CREATE UNIQUE INDEX "SpecificItemOption_sub_category_id_name_key" ON "SpecificItemOption"("sub_category_id", "name");
 
 -- CreateIndex
 CREATE INDEX "idx_listing_name" ON "Listing"("name");
@@ -251,13 +251,13 @@ CREATE INDEX "_ListingToSubCategoryOption_B_index" ON "_ListingToSubCategoryOpti
 CREATE INDEX "_ListingToSpecificItemOption_B_index" ON "_ListingToSpecificItemOption"("B");
 
 -- AddForeignKey
-ALTER TABLE "SubCategoryOption" ADD CONSTRAINT "SubCategoryOption_main_category_id_fkey" FOREIGN KEY ("main_category_id") REFERENCES "MainCategoryOption"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "SubCategoryOption" ADD CONSTRAINT "SubCategoryOption_main_category_id_fkey" FOREIGN KEY ("main_category_id") REFERENCES "MainCategoryOption"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SpecificItemOption" ADD CONSTRAINT "SpecificItemOption_sub_category_id_fkey" FOREIGN KEY ("sub_category_id") REFERENCES "SubCategoryOption"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "SpecificItemOption" ADD CONSTRAINT "SpecificItemOption_sub_category_id_fkey" FOREIGN KEY ("sub_category_id") REFERENCES "SubCategoryOption"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "SpecificItemOption" ADD CONSTRAINT "SpecificItemOption_main_category_id_fkey" FOREIGN KEY ("main_category_id") REFERENCES "MainCategoryOption"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "SpecificItemOption" ADD CONSTRAINT "SpecificItemOption_main_category_id_fkey" FOREIGN KEY ("main_category_id") REFERENCES "MainCategoryOption"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "review" ADD CONSTRAINT "review_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

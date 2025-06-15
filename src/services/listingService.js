@@ -111,7 +111,7 @@ async function translateListingFields(listing, targetLang, sourceLang = null) {
                 comment: await translateText(review.comment, targetLang, sourceLang),
                 status: await translateText(review.status, targetLang, sourceLang),
                 // DO NOT translate user's proper names. Preserve them.
-                user: review.user 
+                user: await translateText(review.user.fname, targetLang, sourceLang) + ' ' + await translateText(review.user.lname, targetLang, sourceLang),
             }))
         );
     }

@@ -67,174 +67,193 @@ async function translateText(text, targetLang, sourceLang = null) {
 // --- Category Service ---
 const categoryService = {
     async createCategory(data, lang = "en", reqDetails = {}) {
-        const { mainCategory, subCategories } = data;
+        const { mainCategory, subCategories, mainCategoryId } = data;
         
         let mainCategoryName = mainCategory;
         let originalMainCategory = mainCategory;
         let originalSubCategories = subCategories;
 
-        if (lang === "ar") {
-            // Convert Arabic to English for database storage
-            mainCategoryName = await translateText(mainCategory, "EN-US", "AR");
-        }
-
-        // Create or find main category
-        let mainCategoryRecord = await prisma.mainCategoryOption.findFirst({
-            where: { name: mainCategoryName }
-        });
-        
-        if (!mainCategoryRecord) {
-            mainCategoryRecord = await prisma.mainCategoryOption.create({
-                data: { name: mainCategoryName }
-            });
-        }
-
-        const createdSubCategories = [];
-
-        // Handle multiple subcategories
-        for (const subCatData of subCategories) {
-            let subCategoryName = subCatData.name;
-            let specificItemNames = subCatData.specificItems || [];
-
-            if (lang === "ar") {
-                // Convert Arabic to English for database storage
-                subCategoryName = await translateText(subCatData.name, "EN-US", "AR");
-                specificItemNames = await Promise.all(
-                    subCatData.specificItems.map(item => translateText(item, "EN-US", "AR"))
-                );
-            }
-
-            // Create or find sub category
-            let subCategoryRecord = await prisma.subCategoryOption.findFirst({
-                where: { 
-                    name: subCategoryName,
-                    mainCategoryId: mainCategoryRecord.id 
-                }
+        // Use existing main category if ID provided, otherwise create or find by name
+        let mainCategoryRecord;
+        if (mainCategoryId) {
+            mainCategoryRecord = await prisma.mainCategoryOption.findUnique({
+                where: { id: parseInt(mainCategoryId, 10) }
             });
             
-            if (!subCategoryRecord) {
-                subCategoryRecord = await prisma.subCategoryOption.create({
-                    data: { 
-                        name: subCategoryName,
-                        mainCategoryId: mainCategoryRecord.id 
-                    }
-                });
+            if (!mainCategoryRecord) {
+                throw new Error("Main category with provided ID not found.");
+            }
+            
+            // Set the main category name from existing record
+            mainCategoryName = mainCategoryRecord.name;
+            originalMainCategory = mainCategoryRecord.name;
+        } else {
+            if (lang === "ar") {
+                // Convert Arabic to English for database storage
+                mainCategoryName = await translateText(mainCategory, "EN-US", "AR");
             }
 
-            // Create specific items for this subcategory
-            const specificItemRecords = [];
-            for (const itemName of specificItemNames) {
-                let specificItemRecord = await prisma.specificItemOption.findFirst({
-                    where: { 
-                        name: itemName,
-                        subCategoryId: subCategoryRecord.id,
-                        mainCategoryId: mainCategoryRecord.id
-                    }
-                });
-                
-                if (!specificItemRecord) {
-                    specificItemRecord = await prisma.specificItemOption.create({
-                        data: { 
-                            name: itemName,
-                            subCategoryId: subCategoryRecord.id,
-                            mainCategoryId: mainCategoryRecord.id
-                        }
-                    });
-                }
-                specificItemRecords.push(specificItemRecord);
-            }
-
-            createdSubCategories.push({
-                record: subCategoryRecord,
-                specificItems: specificItemRecords,
-                originalData: subCatData
+            mainCategoryRecord = await prisma.mainCategoryOption.findFirst({
+                where: { name: mainCategoryName }
             });
-
-            // Cache Arabic version in Redis for each subcategory
-            try {
-                if (lang === "ar") {
-                    // Store original Arabic input in cache
-                    const cacheData = {
-                        mainCategory: { name: originalMainCategory, id: mainCategoryRecord.id },
-                        subCategories: { name: subCatData.name, id: subCategoryRecord.id },
-                        specificItem: specificItemRecords.map((item, index) => ({
-                            name: subCatData.specificItems[index],
-                            id: item.id
-                        })),
-                        createdAt: mainCategoryRecord.createdAt,
-                        updatedAt: mainCategoryRecord.updatedAt
-                    };
-                    await redisClient.setEx(
-                        cacheKeys.categoryAr(mainCategoryRecord.id, subCategoryRecord.id),
-                        AR_CACHE_EXPIRATION,
-                        JSON.stringify(cacheData)
-                    );
-                } else {
-                    // Convert to Arabic and store in cache
-                    const arMainCategory = await translateText(mainCategoryRecord.name, "AR", "EN");
-                    const arSubCategory = await translateText(subCategoryRecord.name, "AR", "EN");
-                    const arSpecificItems = await Promise.all(
-                        specificItemRecords.map(async (item) => ({
-                            name: await translateText(item.name, "AR", "EN"),
-                            id: item.id
-                        }))
-                    );
-                    
-                    const cacheData = {
-                        mainCategory: { name: arMainCategory, id: mainCategoryRecord.id },
-                        subCategories: { name: arSubCategory, id: subCategoryRecord.id },
-                        specificItem: arSpecificItems,
-                        createdAt: mainCategoryRecord.createdAt,
-                        updatedAt: mainCategoryRecord.updatedAt
-                    };
-                    await redisClient.setEx(
-                        cacheKeys.categoryAr(mainCategoryRecord.id, subCategoryRecord.id),
-                        AR_CACHE_EXPIRATION,
-                        JSON.stringify(cacheData)
-                    );
-                }
-            } catch (error) {
-                console.error('Redis cache error during category creation:', error.message);
+            
+            if (!mainCategoryRecord) {
+                mainCategoryRecord = await prisma.mainCategoryOption.create({
+                    data: { name: mainCategoryName }
+                });
             }
         }
 
-        // Invalidate all categories cache
-        try {
-            await redisClient.del(cacheKeys.allCategoriesAr());
-        } catch (error) {
-            console.error('Redis cache error during cache invalidation:', error.message);
-        }
-
-        // Record audit log
-        recordAuditLog(AuditLogAction.CATEGORY_CREATED, {
-            userId: reqDetails.actorUserId,
-            entityName: 'Category',
-            entityId: mainCategoryRecord.id.toString(),
-            newValues: { mainCategoryRecord, subCategories: createdSubCategories },
-            description: `Category '${mainCategoryName}' with ${createdSubCategories.length} subcategories created.`,
-            ipAddress: reqDetails.ipAddress,
-            userAgent: reqDetails.userAgent,
-        });
-
-        // Format response
-        const response = {
+        // Prepare immediate response
+        const immediateResponse = {
+            success: true,
+            message: "Category creation initiated. Processing in background.",
             mainCategory: {
-                name: lang === "ar" ? originalMainCategory : mainCategoryRecord.name,
+                name: lang === "ar" ? (originalMainCategory || mainCategoryRecord.name) : mainCategoryRecord.name,
                 id: mainCategoryRecord.id
             },
-            subCategories: createdSubCategories.map(subCat => ({
-                name: lang === "ar" ? subCat.originalData.name : subCat.record.name,
-                id: subCat.record.id,
-                specificItems: subCat.specificItems.map((item, index) => ({
-                    name: lang === "ar" ? subCat.originalData.specificItems[index] : item.name,
-                    id: item.id
-                }))
-            })),
-            createdAt: mainCategoryRecord.createdAt,
-            updatedAt: mainCategoryRecord.updatedAt
+            status: "processing"
         };
 
-        return response;
+        // Process subcategories and specific items in background
+        setImmediate(async () => {
+            try {
+                const createdSubCategories = [];
+
+                // Handle multiple subcategories
+                for (const subCatData of subCategories) {
+                    let subCategoryName = subCatData.name;
+                    let specificItemNames = subCatData.specificItems || [];
+
+                    if (lang === "ar") {
+                        // Convert Arabic to English for database storage
+                        subCategoryName = await translateText(subCatData.name, "EN-US", "AR");
+                        specificItemNames = await Promise.all(
+                            subCatData.specificItems.map(item => translateText(item, "EN-US", "AR"))
+                        );
+                    }
+
+                    // Create or find sub category
+                    let subCategoryRecord = await prisma.subCategoryOption.findFirst({
+                        where: { 
+                            name: subCategoryName,
+                            mainCategoryId: mainCategoryRecord.id 
+                        }
+                    });
+                    
+                    if (!subCategoryRecord) {
+                        subCategoryRecord = await prisma.subCategoryOption.create({
+                            data: { 
+                                name: subCategoryName,
+                                mainCategoryId: mainCategoryRecord.id 
+                            }
+                        });
+                    }
+
+                    // Create specific items for this subcategory
+                    const specificItemRecords = [];
+                    for (const itemName of specificItemNames) {
+                        let specificItemRecord = await prisma.specificItemOption.findFirst({
+                            where: { 
+                                name: itemName,
+                                subCategoryId: subCategoryRecord.id,
+                                mainCategoryId: mainCategoryRecord.id
+                            }
+                        });
+                        
+                        if (!specificItemRecord) {
+                            specificItemRecord = await prisma.specificItemOption.create({
+                                data: { 
+                                    name: itemName,
+                                    subCategoryId: subCategoryRecord.id,
+                                    mainCategoryId: mainCategoryRecord.id
+                                }
+                            });
+                        }
+                        specificItemRecords.push(specificItemRecord);
+                    }
+
+                    createdSubCategories.push({
+                        record: subCategoryRecord,
+                        specificItems: specificItemRecords,
+                        originalData: subCatData
+                    });
+
+                    // Cache Arabic version in Redis for each subcategory
+                    try {
+                        if (lang === "ar") {
+                            // Store original Arabic input in cache
+                            const cacheData = {
+                                mainCategory: { name: originalMainCategory, id: mainCategoryRecord.id },
+                                subCategories: { name: subCatData.name, id: subCategoryRecord.id },
+                                specificItem: specificItemRecords.map((item, index) => ({
+                                    name: subCatData.specificItems[index],
+                                    id: item.id
+                                })),
+                                createdAt: mainCategoryRecord.createdAt,
+                                updatedAt: mainCategoryRecord.updatedAt
+                            };
+                            await redisClient.setEx(
+                                cacheKeys.categoryAr(mainCategoryRecord.id, subCategoryRecord.id),
+                                AR_CACHE_EXPIRATION,
+                                JSON.stringify(cacheData)
+                            );
+                        } else {
+                            // Convert to Arabic and store in cache
+                            const arMainCategory = await translateText(mainCategoryRecord.name, "AR", "EN");
+                            const arSubCategory = await translateText(subCategoryRecord.name, "AR", "EN");
+                            const arSpecificItems = await Promise.all(
+                                specificItemRecords.map(async (item) => ({
+                                    name: await translateText(item.name, "AR", "EN"),
+                                    id: item.id
+                                }))
+                            );
+                            
+                            const cacheData = {
+                                mainCategory: { name: arMainCategory, id: mainCategoryRecord.id },
+                                subCategories: { name: arSubCategory, id: subCategoryRecord.id },
+                                specificItem: arSpecificItems,
+                                createdAt: mainCategoryRecord.createdAt,
+                                updatedAt: mainCategoryRecord.updatedAt
+                            };
+                            await redisClient.setEx(
+                                cacheKeys.categoryAr(mainCategoryRecord.id, subCategoryRecord.id),
+                                AR_CACHE_EXPIRATION,
+                                JSON.stringify(cacheData)
+                            );
+                        }
+                    } catch (error) {
+                        console.error('Redis cache error during category creation:', error.message);
+                    }
+                }
+
+                // Invalidate all categories cache
+                try {
+                    await redisClient.del(cacheKeys.allCategoriesAr());
+                } catch (error) {
+                    console.error('Redis cache error during cache invalidation:', error.message);
+                }
+
+                // Record audit log
+                recordAuditLog(AuditLogAction.CATEGORY_CREATED, {
+                    userId: reqDetails.actorUserId,
+                    entityName: 'Category',
+                    entityId: mainCategoryRecord.id.toString(),
+                    newValues: { mainCategoryRecord, subCategories: createdSubCategories },
+                    description: mainCategoryId 
+                        ? `Subcategories added to existing category '${mainCategoryRecord.name}' with ${createdSubCategories.length} subcategories.`
+                        : `Category '${mainCategoryName}' with ${createdSubCategories.length} subcategories created.`,
+                    ipAddress: reqDetails.ipAddress,
+                    userAgent: reqDetails.userAgent,
+                });
+
+                console.log(`Background processing completed for category: ${mainCategoryRecord.name}`);
+            } catch (error) {
+                console.error('Background category processing error:', error.message);
+            }
+        });
+
+        return immediateResponse;
     },
 
     async getAllCategories(lang = "en") {
