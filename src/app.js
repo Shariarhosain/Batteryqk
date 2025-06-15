@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import cors from 'cors';
 
 // Load environment variables
 dotenv.config();
@@ -28,15 +29,11 @@ const PORT = process.env.PORT || 3000;
 let criticalConfigMissing = false;
 
 //allow all origins for CORS
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, X-JSON');
-  res.setHeader('Access-Control-Allow-Accept-Language', '*'); // Allow all languages
-  next();
-});
+app.use(cors({
+  origin: '*', // Be cautious with '*' in production
+  methods: ['GET', 'POST', 'PUT', 'DELETE','PATCH'],
+  credentials: true,
+}));
 
 if (!process.env.DATABASE_URL) {
   console.error("FATAL ERROR: DATABASE_URL is not set in .env file!");
