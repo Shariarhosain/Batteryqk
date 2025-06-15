@@ -148,36 +148,21 @@ function createFilterHash(filters) {
 
 const listingService = {
 
-async  createListing(data, files, lang = "en", reqDetails = {}) {
+async createListing(data, files, lang = "en", reqDetails = {}) {
     const { 
         name, price, description, agegroup, location, facilities, operatingHours, 
         mainCategoryIds, subCategoryIds, specificItemIds 
     } = data;
 
-    // --- 1. Handle File Uploads ---
-    let mainImageFilename = null;
-    let subImageFilenames = [];
-    if (files) {
-        if (files.main_image && files.main_image[0]) {
-            mainImageFilename = files.main_image[0].filename;
-        }
-        if (files.sub_images && files.sub_images.length > 0) {
-            subImageFilenames = files.sub_images.map(file => file.filename);
-        }
-    }
-
-    // --- 2. Prepare Data for Database (including translations) ---
-    // This object will hold the data to be inserted into the database.
+    // --- 1. Prepare Data for Database (without images initially) ---
     const listingDataForDb = {
         price: price ? parseFloat(price) : null,
-        main_image: mainImageFilename ? getFileUrl(mainImageFilename) : null,
-        sub_images: subImageFilenames.map(filename => getFileUrl(filename)),
-        // userId: reqDetails.actorUserId || null, // Removed - field doesn't exist in schema
+        main_image: null, // Will be updated after upload
+        sub_images: [], // Will be updated after upload
     };
 
     // Translate text fields if the input language is Arabic
     if (lang === "ar" && deeplClient) {
-        // Await all translations together for better performance
         [
             listingDataForDb.name,
             listingDataForDb.description,
@@ -194,7 +179,6 @@ async  createListing(data, files, lang = "en", reqDetails = {}) {
             operatingHours ? translateArrayFields(Array.isArray(operatingHours) ? operatingHours : [operatingHours], "EN-US", "AR") : [],
         ]);
     } else {
-        // Assign values directly for English or if translation client is unavailable
         listingDataForDb.name = name || null;
         listingDataForDb.description = description || null;
         listingDataForDb.agegroup = agegroup ? (Array.isArray(agegroup) ? agegroup : [agegroup]) : [];
@@ -203,9 +187,7 @@ async  createListing(data, files, lang = "en", reqDetails = {}) {
         listingDataForDb.operatingHours = operatingHours ? (Array.isArray(operatingHours) ? operatingHours : [operatingHours]) : [];
     }
     
-    // --- 3. Connect Category Relationships ---
-    // It's more efficient to connect relationships directly in the 'create' operation
-    // rather than creating and then updating.
+    // --- 2. Connect Category Relationships ---
     const mainCategoryIdsArray = Array.isArray(mainCategoryIds) ? mainCategoryIds : (mainCategoryIds ? [mainCategoryIds] : []);
     const subCategoryIdsArray = Array.isArray(subCategoryIds) ? subCategoryIds : (subCategoryIds ? [subCategoryIds] : []);
     const specificItemIdsArray = Array.isArray(specificItemIds) ? specificItemIds : (specificItemIds ? [specificItemIds] : []);
@@ -220,26 +202,51 @@ async  createListing(data, files, lang = "en", reqDetails = {}) {
         connect: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
     };
 
-    // --- 4. Create the Listing in a Single, Atomic Operation ---
+    // --- 3. Create the Listing First ---
     const newListingWithRelations = await prisma.listing.create({
         data: listingDataForDb,
         include: {
-            // Include relations to get their full data (including names) for the email
             selectedMainCategories: true,
             selectedSubCategories: true,
             selectedSpecificItems: true,
         },
     });
 
-    // --- 5. Handle Background Tasks (Notifications, Emails, Auditing) ---
-    // Use setImmediate to avoid blocking the HTTP response
+    // --- 4. Handle All Background Tasks ---
     setImmediate(async () => {
         try {
+            // Upload images if provided
+            if (files && (files.main_image || files.sub_images)) {
+                const uploadResult = await this.uploadImageFromClient(files);
+                
+                if (uploadResult.success) {
+                    const updateData = {};
+                    
+                    if (uploadResult.data.main_image) {
+                        updateData.main_image = uploadResult.data.main_image.url;
+                    }
+                    
+                    if (uploadResult.data.sub_images && uploadResult.data.sub_images.length > 0) {
+                        updateData.sub_images = uploadResult.data.sub_images.map(img => img.url);
+                    }
+                    
+                    // Update listing with image URLs
+                    await prisma.listing.update({
+                        where: { id: newListingWithRelations.id },
+                        data: updateData
+                    });
+                    
+                    console.log(`Images uploaded and updated for listing ${newListingWithRelations.id}`);
+                } else {
+                    console.error(`Image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
+                }
+            }
+
+            // Handle notifications and emails
             const allUsers = await prisma.user.findMany({
                 select: { id: true, email: true, fname: true },
             });
 
-            // Send notifications
             const notificationPromises = allUsers.map(user => 
                 prisma.notification.create({
                     data: {
@@ -254,7 +261,6 @@ async  createListing(data, files, lang = "en", reqDetails = {}) {
             );
             await Promise.all(notificationPromises);
 
-            // Correctly construct email details by mapping over the included relations
             const listingDetails = `
 Name: ${newListingWithRelations.name || 'N/A'}
 Price: ${newListingWithRelations.price ? `$${newListingWithRelations.price}` : 'N/A'}
@@ -266,23 +272,21 @@ Sub Categories: ${newListingWithRelations.selectedSubCategories?.map(cat => cat.
 Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
             `.trim();
 
-            // Send emails
             const emailPromises = allUsers.map(user => sendMail(
                 user.email,
                 "New Listing Available - Full Details",
                 `Hello ${user.fname || 'there'},\n\nA new listing has been added. Here are the details:\n\n${listingDetails}\n\nBest regards,\nYour Team`,
-                "en", // Emails are sent in English
+                "en",
                 { name: user.fname || 'there', listingDetails: listingDetails }
-            ).catch(err => console.error(`Failed to send email to ${user.email}:`, err))); // Add error handling per promise
+            ).catch(err => console.error(`Failed to send email to ${user.email}:`, err)));
             
             await Promise.allSettled(emailPromises);
-            console.log(`Background tasks initiated for new listing ${newListingWithRelations.id}`);
+            console.log(`Background tasks completed for new listing ${newListingWithRelations.id}`);
 
         } catch (error) {
             console.error(`Error in background task for listing ${newListingWithRelations.id}:`, error);
         }
 
-        // Record audit log
         recordAuditLog(AuditLogAction.LISTING_CREATED, {
             userId: reqDetails.actorUserId,
             entityName: 'Listing',
@@ -294,11 +298,11 @@ Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => ite
         });
     });
 
-    // --- 6. Prepare and Return Final Response Data ---
-    // If the original language was Arabic, return the original (untranslated) text fields
-    // to the user for a consistent UX, but use the full data with relations.
-    if (lang === "ar") {
-        return {
+    // --- 5. Return Response Immediately ---
+    return {
+        success: true,
+        message: "Listing created successfully. Images are being uploaded in background.",
+        listing: lang === "ar" ? {
             ...newListingWithRelations,
             name: data.name,
             description: data.description,
@@ -306,20 +310,67 @@ Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => ite
             location: data.location || [],
             facilities: data.facilities || [],
             operatingHours: data.operatingHours || [],
-        };
-    }
-    
-    return newListingWithRelations;
+        } : newListingWithRelations
+    };
 },
 
+uploadImageFromClient: async function(files) {
+    try {
+        const formData = new FormData();
+        
+        // Handle main image
+        if (files.main_image && files.main_image[0]) {
+            const mainFile = files.main_image[0];
+            if (mainFile.buffer) {
+                const blob = new Blob([mainFile.buffer], { type: mainFile.mimetype });
+                formData.append('main_image', blob, mainFile.originalname);
+            } else {
+                formData.append('main_image', mainFile);
+            }
+        }
+        
+        // Handle sub images with same name as main image
+        if (files.sub_images && files.main_image && files.main_image[0]) {
+            const mainImageName = files.main_image[0].originalname;
+            const mainImageBaseName = mainImageName.split('.')[0];
+            
+            files.sub_images.forEach((subFile, index) => {
+                const extension = subFile.originalname.split('.').pop();
+                const newName = `${mainImageBaseName}_sub_${index + 1}.${extension}`;
+                
+                if (subFile.buffer) {
+                    const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
+                    formData.append('sub_images', blob, newName);
+                } else {
+                    formData.append('sub_images', subFile, newName);
+                }
+            });
+        }
+        
+        console.log('Uploading images with main image name base');
 
-
-
-
-
-
-
-
+        const response = await fetch('http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Image upload failed');
+        }
+        
+        return {
+            success: true,
+            data: data
+        };
+    } catch (error) {
+        console.error('Upload failed:', error.message);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+},
 
 
 
@@ -1116,7 +1167,6 @@ calculateStringSimilarity(str1, str2) {
     return enhancedListing;
 },
 
-
 async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     const listingId = parseInt(id, 10);
     const currentListing = await prisma.listing.findUnique({ 
@@ -1127,51 +1177,19 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
             selectedSpecificItems: true
         }
     });
+    console.log(`Updating listing ${listingId} with data:`, data);
     
     if (!currentListing) return null;
 
     // Handle case where data might be undefined or empty
     const safeData = data || {};
     const { name, price, description, agegroup, location, facilities, operatingHours, 
-            mainCategoryIds, subCategoryIds, specificItemIds, removed_sub_images } = safeData;
+            mainCategoryIds, subCategoryIds, specificItemIds } = safeData;
     
     let updateData = {};
 
     // Handle price
     if (price !== undefined) updateData.price = parseFloat(price);
-
-    // Handle images
-    let newMainImageFilename = currentListing.main_image ? 
-        path.basename(new URL(currentListing.main_image).pathname) : null;
-    let currentSubImageFilenames = currentListing.sub_images.map(url => 
-        path.basename(new URL(url).pathname));
-
-    if (files && files.main_image && files.main_image[0]) {
-        if (currentListing.main_image) {
-            const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
-            deleteFile(oldMainImageFilename);
-        }
-        newMainImageFilename = files.main_image[0].filename;
-        updateData.main_image = getFileUrl(newMainImageFilename);
-    }
-
-    // Handle sub-images
-    let finalSubImageFilenames = [...currentSubImageFilenames];
-    if (removed_sub_images) {
-        const imagesToRemove = Array.isArray(removed_sub_images) ? removed_sub_images : [removed_sub_images];
-        imagesToRemove.forEach(imgUrlToRemove => {
-            const filenameToRemove = path.basename(new URL(imgUrlToRemove).pathname);
-            if (deleteFile(filenameToRemove)) {
-                finalSubImageFilenames = finalSubImageFilenames.filter(fn => fn !== filenameToRemove);
-            }
-        });
-    }
-
-    if (files && files.sub_images && files.sub_images.length > 0) {
-        const newUploadedSubImageFilenames = files.sub_images.map(file => file.filename);
-        finalSubImageFilenames.push(...newUploadedSubImageFilenames);
-    }
-    updateData.sub_images = finalSubImageFilenames.map(filename => getFileUrl(filename));
 
     // Handle text fields with translation based on input language
     if (lang === "ar" && deeplClient) {
@@ -1192,7 +1210,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
         if (operatingHours !== undefined) updateData.operatingHours = Array.isArray(operatingHours) ? operatingHours : [operatingHours];
     }
 
-    // Update listing with basic data
+    // Update listing with basic data first (without images)
     await prisma.listing.update({
         where: { id: listingId },
         data: updateData
@@ -1235,9 +1253,86 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
         });
     }
 
-    // Handle background tasks
+    // Handle background tasks for images and other operations
     setImmediate(async () => {
         try {
+            let imageUpdateData = {};
+            let currentSubImages = [...(currentListing.sub_images || [])];
+
+            // Handle main image - delete old and upload new if provided
+            if (files && files.main_image && files.main_image[0]) {
+                // Delete old main image first
+                if (currentListing.main_image) {
+                    try {
+                        const oldMainImageFilename = path.basename(new URL(currentListing.main_image).pathname);
+                        const deleteSuccess = await this.deleteImageFromServer(oldMainImageFilename);
+                        if (deleteSuccess) {
+                            console.log(`Successfully deleted old main image for listing ${listingId}`);
+                        } else {
+                            console.error(`Failed to delete old main image for listing ${listingId}`);
+                        }
+                    } catch (err) {
+                        console.error(`Error parsing old main image URL for listing ${listingId}:`, err);
+                    }
+                }
+
+                // Upload new main image
+                const mainImageUploadResult = await this.uploadImageFromClient({ main_image: files.main_image });
+                if (mainImageUploadResult.success && mainImageUploadResult.data.main_image) {
+                    imageUpdateData.main_image = mainImageUploadResult.data.main_image.url;
+                    console.log(`Main image updated for listing ${listingId}`);
+                } else {
+                    console.error(`Main image upload failed for listing ${listingId}:`, mainImageUploadResult.error);
+                }
+
+                // Handle removed sub-images - delete all previous sub-images from current listing
+                if (currentListing.sub_images && currentListing.sub_images.length > 0 && files.sub_images && files.sub_images.length > 0) {
+                    console.log(`Deleting all previous sub-images for listing ${listingId}`);
+                    
+                    for (const imgUrl of currentListing.sub_images) {
+                        try {
+                            const filename = path.basename(new URL(imgUrl).pathname);
+                            const deleteSuccess = await this.deleteImageFromServer(filename);
+                            
+                            if (deleteSuccess) {
+                                console.log(`Successfully deleted previous sub-image: ${imgUrl}`);
+                            } else {
+                                console.error(`Failed to delete previous sub-image file: ${filename}`);
+                            }
+                        } catch (err) {
+                            console.error(`Error processing previous sub-image deletion for ${imgUrl}:`, err);
+                        }
+                    }
+                    
+                    // Clear the current sub images array
+                    currentSubImages = [];
+                }
+
+                // Handle new sub-images upload
+                if (files && files.sub_images && files.sub_images.length > 0) {
+                    const subImageUploadResult = await this.uploadSubImagesOnly(files.sub_images, currentListing.name || `listing_${listingId}`);
+                    console.log(`Sub-image upload result for listing ${listingId}:`, subImageUploadResult);
+                    
+                    if (subImageUploadResult.success && subImageUploadResult.data.sub_images) {
+                        const newSubImageUrls = subImageUploadResult.data.sub_images.map(img => img.url);
+                        currentSubImages = newSubImageUrls;
+                        console.log(`New sub images uploaded for listing ${listingId}`);
+                    } else {
+                        console.error(`Sub images upload failed for listing ${listingId}:`, subImageUploadResult.error);
+                    }
+                }
+
+                // Update listing with new image URLs if any changes
+                if (Object.keys(imageUpdateData).length > 0 || currentListing.sub_images.length > 0 || (files && files.sub_images)) {
+                    imageUpdateData.sub_images = currentSubImages;
+                    await prisma.listing.update({
+                        where: { id: listingId },
+                        data: imageUpdateData
+                    });
+                    console.log(`Image URLs updated for listing ${listingId}. New sub_images:`, currentSubImages);
+                }
+            }
+
             // Get final updated listing with all relations and stats
             const finalListing = await prisma.listing.findUnique({
                 where: { id: listingId },
@@ -1245,15 +1340,15 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
                     selectedMainCategories: true,
                     selectedSubCategories: true,
                     selectedSpecificItems: true,
-                   reviews: {
-                where: { status: 'ACCEPTED' },
-                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-            },
-            bookings: {
-                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
-            }
-        }
-        });
+                    reviews: {
+                        where: { status: 'ACCEPTED' },
+                        select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                    },
+                    bookings: {
+                        select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
+                    }
+                }
+            });
 
             // Calculate stats
             const acceptedReviews = finalListing.reviews;
@@ -1323,20 +1418,114 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     return true;
 },
 
+// New helper function to upload sub-images only
+uploadSubImagesOnly: async function(subImageFiles, baseName) {
+    try {
+        const formData = new FormData();
+        
+        // Handle sub images with custom naming
+        subImageFiles.forEach((subFile, index) => {
+            const extension = subFile.originalname.split('.').pop();
+            const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
+            
+            if (subFile.buffer) {
+                const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
+                formData.append('sub_images', blob, newName);
+            } else {
+                formData.append('sub_images', subFile, newName);
+            }
+        });
+        
+        console.log('Uploading sub-images only');
 
-  async deleteListing(id, reqDetails = {}) {
+        const response = await fetch('http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Sub-images upload failed');
+        }
+        
+        return {
+            success: true,
+            data: data
+        };
+    } catch (error) {
+        console.error('Sub-images upload failed:', error.message);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+},
+
+// Helper function to delete image from server
+deleteImageFromServer: async function(filename) {
+    try {
+        console.log(`Attempting to delete image: ${filename}`);
+        const deleteUrl = `http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/delete/${filename}`;
+        console.log(`Delete URL: ${deleteUrl}`);
+        
+        const response = await fetch(deleteUrl, {
+            method: 'DELETE'
+        });
+        
+        const result = await response.json();
+        console.log(`Delete response for ${filename}:`, result);
+        
+        if (response.ok && result.success) {
+            console.log(`Successfully deleted image: ${filename}`);
+            return true;
+        } else {
+            console.error(`Failed to delete image ${filename}:`, result.error || 'Unknown error');
+            return false;
+        }
+    } catch (error) {
+        console.error(`Error deleting image ${filename}:`, error.message);
+        return false;
+    }
+},
+
+
+
+
+
+async deleteListing(id, reqDetails = {}) {
     const listingId = parseInt(id, 10);
     const listing = await prisma.listing.findUnique({ where: { id: listingId }});
     if (!listing) return null;
 
-    // Delete associated images from storage
+    // Delete associated images from server
     if (listing.main_image) {
-        deleteFile(path.basename(new URL(listing.main_image).pathname));
+        try {
+            const mainImageFilename = path.basename(new URL(listing.main_image).pathname);
+            const deleteSuccess = await this.deleteImageFromServer(mainImageFilename);
+            if (deleteSuccess) {
+                console.log(`Successfully deleted main image for listing ${listingId}`);
+            } else {
+                console.error(`Failed to delete main image for listing ${listingId}`);
+            }
+        } catch (err) {
+            console.error(`Error parsing main image URL for listing ${listingId}:`, err);
+        }
     }
+    
     if (listing.sub_images && listing.sub_images.length > 0) {
-        listing.sub_images.forEach(imageUrl => {
-            deleteFile(path.basename(new URL(imageUrl).pathname));
-        });
+        for (const imageUrl of listing.sub_images) {
+            try {
+                const filename = path.basename(new URL(imageUrl).pathname);
+                const deleteSuccess = await this.deleteImageFromServer(filename);
+                if (deleteSuccess) {
+                    console.log(`Successfully deleted sub-image: ${imageUrl}`);
+                } else {
+                    console.error(`Failed to delete sub-image: ${filename}`);
+                }
+            } catch (err) {
+                console.error(`Error processing sub-image deletion for ${imageUrl}:`, err);
+            }
+        }
     }
     
     const deletedListing = await prisma.listing.delete({ where: { id: listingId } });
@@ -1369,7 +1558,9 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     });
 
     return deletedListing;
-  },
+},
+
+
 };
 
 export default listingService;

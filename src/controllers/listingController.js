@@ -11,9 +11,11 @@ const listingController = {
                 return res.status(400).json({ message: translate('validation_error', getLanguage(req), { errors: errors.array() }) });
                 
             }
+           // console.log('Request body:', req.uploadedImages); // Debugging log
 
             const lang = req.query.lang || req.headers['accept-language'] || 'en';
             const files = req.files;
+            console.log('Files received:', files); // Debugging log
             
             // Extract request details for audit logging
             const reqDetails = {
@@ -22,7 +24,7 @@ const listingController = {
                 userAgent: req.get('User-Agent')
             };
 
-            const listing = await listingService.createListing(req.body, files, lang, reqDetails);
+            const listing = await listingService.createListing(req.body, req.files, lang, reqDetails);
             
             res.status(201).json({
                 success: true,
@@ -189,7 +191,7 @@ const listingController = {
                 userAgent: req.get('User-Agent')
             };
 
-            const updatedListing = await listingService.updateListing(id, req.body, files, lang, reqDetails);
+            const updatedListing = await listingService.updateListing(id, req.body, req.files, lang, reqDetails);
             
             if (!updatedListing) {
                 return res.status(404).json({
