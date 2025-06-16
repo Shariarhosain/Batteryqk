@@ -399,7 +399,7 @@ uploadImageFromClient: async function (files) {
         }
 
      const response = await axios.post(
-    'http://localhost:3001/upload', // <--- CHANGE TO THIS
+    'https://imgupload-production.up.railway.app/upload', // <--- CHANGE TO THIS
     form,
     {
         headers: form.getHeaders(),
