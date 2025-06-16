@@ -218,6 +218,8 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
     // --- 4. Handle All Background Tasks ---
     setImmediate(async () => {
         try {
+            let finalListing = newListingWithRelations;
+            
             // Upload images if provided
             if (files && (files.main_image || files.sub_images)) {
                 const uploadResult = await this.uploadImageFromClient(files);
@@ -233,15 +235,69 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
                         updateData.sub_images = uploadResult.data.sub_images.map(img => img.url);
                     }
                     
-                    // Update listing with image URLs
-                    await prisma.listing.update({
+                    // Update listing with image URLs and get final listing with all relations
+                    finalListing = await prisma.listing.update({
                         where: { id: newListingWithRelations.id },
-                        data: updateData
+                        data: updateData,
+                        include: {
+                            selectedMainCategories: true,
+                            selectedSubCategories: true,
+                            selectedSpecificItems: true,
+                            reviews: {
+                                where: { status: 'ACCEPTED' },
+                                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                            },
+                            bookings: {
+                                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
+                            }
+                        }
                     });
                     
                     console.log(`Images uploaded and updated for listing ${newListingWithRelations.id}`);
                 } else {
                     console.error(`Image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
+                }
+            }
+
+            // Calculate stats for the final listing
+            const acceptedReviews = finalListing.reviews || [];
+            const totalReviews = acceptedReviews.length;
+            const averageRating = totalReviews > 0 
+                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                : 0;
+
+            const ratingDistribution = {
+                5: acceptedReviews.filter(r => r.rating === 5).length,
+                4: acceptedReviews.filter(r => r.rating === 4).length,
+                3: acceptedReviews.filter(r => r.rating === 3).length,
+                2: acceptedReviews.filter(r => r.rating === 2).length,
+                1: acceptedReviews.filter(r => r.rating === 1).length
+            };
+
+            const enhancedFinalListing = {
+                ...finalListing,
+                averageRating: Math.round(averageRating * 10) / 10,
+                totalReviews,
+                ratingDistribution,
+                totalBookings: (finalListing.bookings || []).length,
+                confirmedBookings: (finalListing.bookings || []).filter(b => b.status === 'CONFIRMED').length
+            };
+
+            // Update Arabic cache for individual listing and clear all listings cache
+            if (deeplClient && redisClient.isReady) {
+                try {
+                    // Translate and cache individual listing
+                    const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
+                    await redisClient.setEx(
+                        cacheKeys.listingAr(enhancedFinalListing.id),
+                        AR_CACHE_EXPIRATION,
+                        JSON.stringify(translatedListing)
+                    );
+                    console.log(`Redis: AR Cache - Cached new listing ${enhancedFinalListing.id}`);
+
+                 
+                } catch (cacheError) {
+                    console.error(`Redis: AR Cache - Error caching new listing ${enhancedFinalListing.id} ->`, cacheError.message);
                 }
             }
 
@@ -255,9 +311,9 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
                     data: {
                         userId: user.id,
                         title: "New Listing Available",
-                        message: `A new listing "${newListingWithRelations.name || 'Untitled'}" has been added.`,
+                        message: `A new listing "${enhancedFinalListing.name || 'Untitled'}" has been added.`,
                         type: 'GENERAL',
-                        entityId: newListingWithRelations.id.toString(),
+                        entityId: enhancedFinalListing.id.toString(),
                         entityType: 'Listing'
                     }
                 })
@@ -265,14 +321,14 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
             await Promise.all(notificationPromises);
 
             const listingDetails = `
-Name: ${newListingWithRelations.name || 'N/A'}
-Price: ${newListingWithRelations.price ? `$${newListingWithRelations.price}` : 'N/A'}
-Description: ${newListingWithRelations.description || 'No description available.'}
-Location: ${newListingWithRelations.location?.join(', ') || 'N/A'}
-Facilities: ${newListingWithRelations.facilities?.join(', ') || 'N/A'}
-Main Categories: ${newListingWithRelations.selectedMainCategories?.map(cat => cat.name).join(', ') || 'N/A'}
-Sub Categories: ${newListingWithRelations.selectedSubCategories?.map(cat => cat.name).join(', ') || 'N/A'}
-Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
+Name: ${enhancedFinalListing.name || 'N/A'}
+Price: ${enhancedFinalListing.price ? `$${enhancedFinalListing.price}` : 'N/A'}
+Description: ${enhancedFinalListing.description || 'No description available.'}
+Location: ${enhancedFinalListing.location?.join(', ') || 'N/A'}
+Facilities: ${enhancedFinalListing.facilities?.join(', ') || 'N/A'}
+Main Categories: ${enhancedFinalListing.selectedMainCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+Sub Categories: ${enhancedFinalListing.selectedSubCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+Specific Items: ${enhancedFinalListing.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
             `.trim();
 
             const emailPromises = allUsers.map(user => sendMail(
@@ -284,7 +340,7 @@ Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => ite
             ).catch(err => console.error(`Failed to send email to ${user.email}:`, err)));
             
             await Promise.allSettled(emailPromises);
-            console.log(`Background tasks completed for new listing ${newListingWithRelations.id}`);
+            console.log(`Background tasks completed for new listing ${enhancedFinalListing.id}`);
 
         } catch (error) {
             console.error(`Error in background task for listing ${newListingWithRelations.id}:`, error);
@@ -357,7 +413,7 @@ uploadImageFromClient: async function(files) {
         console.log('Uploading images with main image name base');
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
+            'http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload',
             formData,
             {
                 headers: formData.getHeaders(),
@@ -378,6 +434,9 @@ uploadImageFromClient: async function(files) {
         };
     }
 },
+
+
+
 
 // uploadImageFromClient: async function (files) {
 //     try {
@@ -429,8 +488,8 @@ uploadImageFromClient: async function(files) {
 
 async getAllListings(filters = {}, lang = "en") {
     const { page = 1, limit = 8, search, rating, ...otherFilters } = filters;
-    const pageNum = parseInt(page, 10) || 1; // Add radix parameter and fallback
-    const limitNum = parseInt(limit, 10) || 8; // Add radix parameter and fallback
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 8;
     const offset = (pageNum - 1) * limitNum;
 
     // Build where clause for filtering
@@ -519,14 +578,116 @@ async getAllListings(filters = {}, lang = "en") {
         whereClause.agegroup = { hasSome: processedAgeGroups };
     }
 
-    // Handle rating filter for exact matches
-    let allListingsWithStats = [];
-    let totalCount = 0;
-    let listings = [];
+    // Get all listing IDs first to check cache
+    const allListingIds = await prisma.listing.findMany({
+        where: whereClause,
+        select: { id: true },
+        orderBy: { id: 'asc' }
+    });
 
-    if (rating) {
-        // When rating filter is applied, we need to fetch all listings first, calculate stats, then filter and paginate
-        allListingsWithStats = await prisma.listing.findMany({
+    let listings = [];
+    let totalCount = allListingIds.length;
+
+    // If Arabic language, try to get all listings from Redis cache first
+    if (lang === "ar" && deeplClient && redisClient.isReady) {
+        const cachedListings = [];
+        const uncachedIds = [];
+
+        // Check cache for all listing IDs
+        for (const { id } of allListingIds) {
+            try {
+                const cachedListing = await redisClient.get(cacheKeys.listingAr(id));
+                if (cachedListing) {
+                    const parsed = JSON.parse(cachedListing);
+                    if (parsed.averageRating !== undefined && parsed.totalReviews !== undefined) {
+                        cachedListings.push(parsed);
+                    } else {
+                        uncachedIds.push(id);
+                    }
+                } else {
+                    uncachedIds.push(id);
+                }
+            } catch (cacheError) {
+                console.error(`Redis: AR Cache - Error fetching listing ${id} ->`, cacheError.message);
+                uncachedIds.push(id);
+            }
+        }
+
+        // Fetch uncached listings from database
+        let uncachedListings = [];
+        if (uncachedIds.length > 0) {
+            uncachedListings = await prisma.listing.findMany({
+                where: { 
+                    id: { in: uncachedIds },
+                    ...whereClause 
+                },
+                include: {
+                    selectedMainCategories: true,
+                    selectedSubCategories: true,
+                    selectedSpecificItems: true,
+                    reviews: {
+                        where: { status: 'ACCEPTED' },
+                        select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                    },
+                    bookings: {
+                        select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
+                    }
+                },
+                orderBy: { id: 'asc' }
+            });
+
+            // Calculate stats and translate uncached listings
+            uncachedListings = await Promise.all(
+                uncachedListings.map(async (listing) => {
+                    const acceptedReviews = listing.reviews;
+                    const totalReviews = acceptedReviews.length;
+                    const averageRating = totalReviews > 0 
+                        ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                        : 0;
+
+                    const ratingDistribution = {
+                        5: acceptedReviews.filter(r => r.rating === 5).length,
+                        4: acceptedReviews.filter(r => r.rating === 4).length,
+                        3: acceptedReviews.filter(r => r.rating === 3).length,
+                        2: acceptedReviews.filter(r => r.rating === 2).length,
+                        1: acceptedReviews.filter(r => r.rating === 1).length
+                    };
+
+                    const enhancedListing = {
+                        ...listing,
+                        averageRating: Math.round(averageRating * 10) / 10,
+                        totalReviews,
+                        ratingDistribution,
+                        totalBookings: listing.bookings.length,
+                        confirmedBookings: listing.bookings.filter(b => b.status === 'CONFIRMED').length
+                    };
+
+                    // Translate and cache
+                    const translatedListing = await translateListingFields(enhancedListing, "AR", "EN");
+                    
+                    try {
+                        await redisClient.setEx(
+                            cacheKeys.listingAr(listing.id),
+                            AR_CACHE_EXPIRATION,
+                            JSON.stringify(translatedListing)
+                        );
+                        console.log(`Redis: AR Cache - Cached individual listing ${listing.id}`);
+                    } catch (cacheError) {
+                        console.error(`Redis: AR Cache - Error caching listing ${listing.id} ->`, cacheError.message);
+                    }
+
+                    return translatedListing;
+                })
+            );
+        }
+
+        // Combine cached and uncached listings
+        listings = [...cachedListings, ...uncachedListings].sort((a, b) => a.id - b.id);
+        
+        console.log(`Redis: AR Cache - Retrieved ${cachedListings.length} from cache, ${uncachedListings.length} from database`);
+    } else {
+        // English language or cache unavailable - fetch from database
+        listings = await prisma.listing.findMany({
             where: whereClause,
             include: {
                 selectedMainCategories: true,
@@ -537,128 +698,13 @@ async getAllListings(filters = {}, lang = "en") {
                     select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
                 },
                 bookings: {
-                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
+                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
                 }
             },
             orderBy: { id: 'asc' }
         });
 
-        // Calculate stats and filter by rating
-        const listingsWithStats = allListingsWithStats.map(listing => {
-            const acceptedReviews = listing.reviews;
-            const totalReviews = acceptedReviews.length;
-            const averageRating = totalReviews > 0 
-                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
-                : 0;
-
-            const ratingDistribution = {
-                5: acceptedReviews.filter(r => r.rating === 5).length,
-                4: acceptedReviews.filter(r => r.rating === 4).length,
-                3: acceptedReviews.filter(r => r.rating === 3).length,
-                2: acceptedReviews.filter(r => r.rating === 2).length,
-                1: acceptedReviews.filter(r => r.rating === 1).length
-            };
-
-            return {
-                ...listing,
-                averageRating: Math.round(averageRating * 10) / 10,
-                totalReviews,
-                ratingDistribution,
-                totalBookings: listing.bookings.length,
-                confirmedBookings: listing.bookings.filter(b => b.status === 'CONFIRMED').length
-            };
-        });
-
-        const minRating = parseFloat(rating);
-        const filteredListings = listingsWithStats.filter(listing => listing.averageRating >= minRating);
-        
-        totalCount = filteredListings.length;
-        listings = filteredListings.slice(offset, offset + limitNum);
-    } else {
-        // No rating filter - use regular pagination
-        totalCount = await prisma.listing.count({ where: whereClause });
-
-        listings = await prisma.listing.findMany({
-            where: whereClause,
-            include: {
-                selectedMainCategories: true,
-                selectedSubCategories: true,
-                selectedSpecificItems: true,
-                reviews: {
-                where: { status: 'ACCEPTED' },
-                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-            },
-            bookings: {
-                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
-            }
-            },
-            orderBy: { id: 'asc' },
-            skip: offset,
-            take: limitNum
-        });
-    }
-
-    // If no results found, use intelligent similarity search
-    if (listings.length === 0 && this.hasSearchCriteria(filters)) {
-        console.log("No exact matches found, attempting intelligent similarity search...");
-        usingSimilaritySearch = true;
-        
-        // Get all active listings for similarity comparison
-        const allListings = await prisma.listing.findMany({
-            where: { isActive: true },
-            include: {
-                selectedMainCategories: true,
-                selectedSubCategories: true,
-                selectedSpecificItems: true,
-                reviews: {
-                where: { status: 'ACCEPTED' },
-                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-            },
-            bookings: {
-                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
-            }
-            },
-            orderBy: { id: 'asc' }
-        });
-
-        // Calculate similarity scores
-        const scoredListings = allListings.map(listing => ({
-            ...listing,
-            similarityScore: this.calculateIntelligentSimilarityScore(listing, filters)
-        }));
-
-        const similarityThreshold = 0.2; // Lowered threshold for age group matching
-        
-        const filteredScoredListings = scoredListings
-            .filter(listing => listing.similarityScore > similarityThreshold)
-            .sort((a, b) => {
-                if (b.similarityScore !== a.similarityScore) {
-                    return b.similarityScore - a.similarityScore;
-                }
-                return a.id - b.id;
-            });
-
-        totalCount = filteredScoredListings.length;
-        listings = filteredScoredListings.slice(offset, offset + limitNum);
-        
-        console.log(`Similarity search found ${listings.length} matches out of ${allListings.length} total listings (threshold: ${similarityThreshold})`);
-        
-        if (listings.length === 0) {
-            console.log("No listings meet the minimum similarity threshold");
-            return {
-                listings: [],
-                totalCount: 0,
-                totalPages: 0,
-                currentPage: pageNum,
-                hasNextPage: false,
-                hasPrevPage: pageNum > 1,
-                usingSimilaritySearch: true
-            };
-        }
-    }
-
-    // Calculate review statistics for listings without rating filter (or similarity search)
-    if (!rating && !usingSimilaritySearch) {
+        // Calculate stats for non-Arabic listings
         listings = listings.map(listing => {
             const acceptedReviews = listing.reviews;
             const totalReviews = acceptedReviews.length;
@@ -685,51 +731,72 @@ async getAllListings(filters = {}, lang = "en") {
         });
     }
 
-    // Handle Arabic translation and caching
-    if (lang === "ar" && deeplClient) {
-        const cachedArListings = new Map();
-        if (redisClient.isReady) {
-            try {
-                for (const listing of listings) {
-                    const cachedListing = await redisClient.get(cacheKeys.listingAr(listing.id));
-                    if (cachedListing) {
-                        const parsed = JSON.parse(cachedListing);
-                        if (parsed.totalReviews === listing.totalReviews && 
-                            parsed.totalBookings === listing.totalBookings) {
-                            cachedArListings.set(listing.id, parsed);
-                        }
-                    }
+    // Apply rating filter if specified
+    if (rating) {
+        const minRating = parseFloat(rating);
+        listings = listings.filter(listing => listing.averageRating >= minRating);
+        totalCount = listings.length;
+    }
+
+    // If no results found, use intelligent similarity search
+    if (listings.length === 0 && this.hasSearchCriteria(filters)) {
+        console.log("No exact matches found, attempting intelligent similarity search...");
+        usingSimilaritySearch = true;
+        
+        // Get all active listings for similarity comparison
+        const allListings = await prisma.listing.findMany({
+            where: { isActive: true },
+            include: {
+                selectedMainCategories: true,
+                selectedSubCategories: true,
+                selectedSpecificItems: true,
+                reviews: {
+                    where: { status: 'ACCEPTED' },
+                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                },
+                bookings: {
+                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
                 }
-            } catch (cacheError) {
-                console.error("Redis: AR Cache - Error checking individual listings ->", cacheError.message);
-            }
+            },
+            orderBy: { id: 'asc' }
+        });
+
+        // Calculate similarity scores
+        const scoredListings = allListings.map(listing => ({
+            ...listing,
+            similarityScore: this.calculateIntelligentSimilarityScore(listing, filters)
+        }));
+
+        const similarityThreshold = 0.2;
+        
+        const filteredScoredListings = scoredListings
+            .filter(listing => listing.similarityScore > similarityThreshold)
+            .sort((a, b) => {
+                if (b.similarityScore !== a.similarityScore) {
+                    return b.similarityScore - a.similarityScore;
+                }
+                return a.id - b.id;
+            });
+
+        totalCount = filteredScoredListings.length;
+        listings = filteredScoredListings.slice(offset, offset + limitNum);
+        
+        console.log(`Similarity search found ${listings.length} matches out of ${allListings.length} total listings`);
+        
+        if (listings.length === 0) {
+            return {
+                listings: [],
+                totalCount: 0,
+                totalPages: 0,
+                currentPage: pageNum,
+                hasNextPage: false,
+                hasPrevPage: pageNum > 1,
+                usingSimilaritySearch: true
+            };
         }
-
-        listings = await Promise.all(
-            listings.map(async (listing) => {
-                const cachedListing = cachedArListings.get(listing.id);
-                if (cachedListing) {
-                    return cachedListing;
-                }
-
-                const translatedListing = await translateListingFields(listing, "AR", "EN");
-                
-                if (redisClient.isReady) {
-                    try {
-                        await redisClient.setEx(
-                            cacheKeys.listingAr(listing.id),
-                            AR_CACHE_EXPIRATION,
-                            JSON.stringify(translatedListing)
-                        );
-                        console.log(`Redis: AR Cache - Cached individual listing ${listing.id}`);
-                    } catch (cacheError) {
-                        console.error(`Redis: AR Cache - Error caching listing ${listing.id} ->`, cacheError.message);
-                    }
-                }
-
-                return translatedListing;
-            })
-        );
+    } else {
+        // Apply pagination to the results
+        listings = listings.slice(offset, offset + limitNum);
     }
 
     // Calculate final pagination
@@ -1494,7 +1561,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
         console.log('Uploading sub-images only');
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
+            'http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload',
             formData,
             {
                 headers: formData.getHeaders(),
@@ -1520,7 +1587,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
 deleteImageFromServer: async function(filename) {
     try {
         console.log(`Attempting to delete image: ${filename}`);
-        const deleteUrl = `http://q0c040w8s4gcc40kso48cog0-082014034375:3001/delete/${filename}`;
+        const deleteUrl = `-http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload/delete/${filename}`;
         console.log(`Delete URL: ${deleteUrl}`);
         
         const response = await fetch(deleteUrl, {
