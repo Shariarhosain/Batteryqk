@@ -150,63 +150,6 @@ function createFilterHash(filters) {
 
 const listingService = {
 
-// uploadImageFromClient: async function(files) {
-//     try {
-//         const formData = new FormData();
-        
-//         // Handle main image
-//         if (files.main_image && files.main_image[0]) {
-//             const mainFile = files.main_image[0];
-//             if (mainFile.buffer) {
-//                 const blob = new Blob([mainFile.buffer], { type: mainFile.mimetype });
-//                 formData.append('main_image', blob, mainFile.originalname);
-//             } else {
-//                 formData.append('main_image', mainFile);
-//             }
-//         }
-        
-//         // Handle sub images with same name as main image
-//         if (files.sub_images && files.main_image && files.main_image[0]) {
-//             const mainImageName = files.main_image[0].originalname;
-//             const mainImageBaseName = mainImageName.split('.')[0];
-            
-//             files.sub_images.forEach((subFile, index) => {
-//                 const extension = subFile.originalname.split('.').pop();
-//                 const newName = `${mainImageBaseName}_sub_${index + 1}.${extension}`;
-                
-//                 if (subFile.buffer) {
-//                     const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
-//                     formData.append('sub_images', blob, newName);
-//                 } else {
-//                     formData.append('sub_images', subFile, newName);
-//                 }
-//             });
-//         }
-        
-//         console.log('Uploading images with main image name base');
-
-//         const response = await fetch('http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/upload', {
-//             method: 'POST',
-//             body: formData,
-//         });
-        
-//         const data = await response.json();
-//         if (!response.ok) {
-//             throw new Error(data.error || 'Image upload failed');
-//         }
-        
-//         return {
-//             success: true,
-//             data: data
-//         };
-//     } catch (error) {
-//         console.error('Upload failed:', error.message);
-//         return {
-//             success: false,
-//             error: error.message
-//         };
-//     }
-// },
 
 async createListing(data, files, lang = "en", reqDetails = {}) {
     const { 
@@ -374,53 +317,110 @@ Specific Items: ${newListingWithRelations.selectedSpecificItems?.map(item => ite
     };
 },
 
-
-uploadImageFromClient: async function (files) {
+uploadImageFromClient: async function(files) {
     try {
-        const form = new FormData();
-
-        // Append main image
-        if (files.main_image?.[0]) {
-            const file = files.main_image[0];
-            form.append('main_image', file.buffer, {
-                filename: file.originalname,
-                contentType: file.mimetype,
-            });
-        }
-
-        // Append sub images
-        if (files.sub_images && Array.isArray(files.sub_images)) {
-            files.sub_images.forEach((subFile) => {
-                form.append('sub_images', subFile.buffer, {
-                    filename: subFile.originalname,
-                    contentType: subFile.mimetype,
-                });
-            });
-        }
-
-        const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
-            form,
-            {
-                headers: form.getHeaders(),
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
+        const formData = new FormData();
+        
+        // Handle main image
+        if (files.main_image && files.main_image[0]) {
+            const mainFile = files.main_image[0];
+            if (mainFile.buffer) {
+                const blob = new Blob([mainFile.buffer], { type: mainFile.mimetype });
+                formData.append('main_image', blob, mainFile.originalname);
+            } else {
+                formData.append('main_image', mainFile);
             }
-        );
+        }
+        
+        // Handle sub images with same name as main image
+        if (files.sub_images && files.main_image && files.main_image[0]) {
+            const mainImageName = files.main_image[0].originalname;
+            const mainImageBaseName = mainImageName.split('.')[0];
+            
+            files.sub_images.forEach((subFile, index) => {
+                const extension = subFile.originalname.split('.').pop();
+                const newName = `${mainImageBaseName}_sub_${index + 1}.${extension}`;
+                
+                if (subFile.buffer) {
+                    const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
+                    formData.append('sub_images', blob, newName);
+                } else {
+                    formData.append('sub_images', subFile, newName);
+                }
+            });
+        }
+        
+        console.log('Uploading images with main image name base');
 
+        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
+            method: 'POST',
+            body: formData,
+        });
+        
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Image upload failed');
+        }
+        
         return {
             success: true,
-            data: response.data
+            data: data
         };
     } catch (error) {
-        console.error('Upload failed:', error.response?.data || error.message);
+        console.error('Upload failed:', error.message);
         return {
             success: false,
             error: error.message
         };
     }
-
 },
+
+// uploadImageFromClient: async function (files) {
+//     try {
+//         const form = new FormData();
+
+//         // Append main image
+//         if (files.main_image?.[0]) {
+//             const file = files.main_image[0];
+//             form.append('main_image', file.buffer, {
+//                 filename: file.originalname,
+//                 contentType: file.mimetype,
+//             });
+//         }
+
+//         // Append sub images
+//         if (files.sub_images && Array.isArray(files.sub_images)) {
+//             files.sub_images.forEach((subFile) => {
+//                 form.append('sub_images', subFile.buffer, {
+//                     filename: subFile.originalname,
+//                     contentType: subFile.mimetype,
+//                 });
+//             });
+//         }
+
+//         const response = await axios.post(
+//             'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
+//             form,
+//             {
+//                 headers: form.getHeaders(),
+//                 maxContentLength: Infinity,
+//                 maxBodyLength: Infinity,
+//             }
+//         );
+
+//         return {
+//             success: true,
+//             data: response.data
+//         };
+//     } catch (error) {
+//         console.error('Upload failed:', error.response?.data || error.message);
+//         return {
+//             success: false,
+//             error: error.message
+//         };
+//     }
+
+// },
 
 
 async getAllListings(filters = {}, lang = "en") {
@@ -1359,7 +1359,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
 
                 // Handle new sub-images upload
                 if (files && files.sub_images && files.sub_images.length > 0) {
-                    const subImageUploadResult = await this.uploadImageFromClient(files.sub_images, currentListing.name || `listing_${listingId}`);
+                    const subImageUploadResult = await this.uploadSubImagesOnly(files.sub_images, currentListing.name || `listing_${listingId}`);
                     console.log(`Sub-image upload result for listing ${listingId}:`, subImageUploadResult);
                     
                     if (subImageUploadResult.success && subImageUploadResult.data.sub_images) {
@@ -1468,47 +1468,47 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
 },
 
 // // New helper function to upload sub-images only
-// uploadSubImagesOnly: async function(subImageFiles, baseName) {
-//     try {
-//         const formData = new FormData();
+uploadSubImagesOnly: async function(subImageFiles, baseName) {
+    try {
+        const formData = new FormData();
         
-//         // Handle sub images with custom naming
-//         subImageFiles.forEach((subFile, index) => {
-//             const extension = subFile.originalname.split('.').pop();
-//             const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
+        // Handle sub images with custom naming
+        subImageFiles.forEach((subFile, index) => {
+            const extension = subFile.originalname.split('.').pop();
+            const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
             
-//             if (subFile.buffer) {
-//                 const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
-//                 formData.append('sub_images', blob, newName);
-//             } else {
-//                 formData.append('sub_images', subFile, newName);
-//             }
-//         });
+            if (subFile.buffer) {
+                const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
+                formData.append('sub_images', blob, newName);
+            } else {
+                formData.append('sub_images', subFile, newName);
+            }
+        });
         
-//         console.log('Uploading sub-images only');
+        console.log('Uploading sub-images only');
 
-//         const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
-//             method: 'POST',
-//             body: formData,
-//         });
+        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
+            method: 'POST',
+            body: formData,
+        });
         
-//         const data = await response.json();
-//         if (!response.ok) {
-//             throw new Error(data.error || 'Sub-images upload failed');
-//         }
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Sub-images upload failed');
+        }
         
-//         return {
-//             success: true,
-//             data: data
-//         };
-//     } catch (error) {
-//         console.error('Sub-images upload failed:', error.message);
-//         return {
-//             success: false,
-//             error: error.message
-//         };
-//     }
-// },
+        return {
+            success: true,
+            data: data
+        };
+    } catch (error) {
+        console.error('Sub-images upload failed:', error.message);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+},
 
 // Helper function to delete image from server
 deleteImageFromServer: async function(filename) {
