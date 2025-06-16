@@ -325,8 +325,10 @@ uploadImageFromClient: async function(files) {
         if (files.main_image && files.main_image[0]) {
             const mainFile = files.main_image[0];
             if (mainFile.buffer) {
-                const blob = new Blob([mainFile.buffer], { type: mainFile.mimetype });
-                formData.append('main_image', blob, mainFile.originalname);
+                formData.append('main_image', mainFile.buffer, {
+                    filename: mainFile.originalname,
+                    contentType: mainFile.mimetype,
+                });
             } else {
                 formData.append('main_image', mainFile);
             }
@@ -342,8 +344,10 @@ uploadImageFromClient: async function(files) {
                 const newName = `${mainImageBaseName}_sub_${index + 1}.${extension}`;
                 
                 if (subFile.buffer) {
-                    const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
-                    formData.append('sub_images', blob, newName);
+                    formData.append('sub_images', subFile.buffer, {
+                        filename: newName,
+                        contentType: subFile.mimetype,
+                    });
                 } else {
                     formData.append('sub_images', subFile, newName);
                 }
@@ -352,22 +356,22 @@ uploadImageFromClient: async function(files) {
         
         console.log('Uploading images with main image name base');
 
-        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
-            method: 'POST',
-            body: formData,
-        });
-        
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Image upload failed');
-        }
+        const response = await axios.post(
+            'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
+            formData,
+            {
+                headers: formData.getHeaders(),
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+            }
+        );
         
         return {
             success: true,
-            data: data
+            data: response.data
         };
     } catch (error) {
-        console.error('Upload failed:', error.message);
+        console.error('Upload failed:', error.response?.data || error.message);
         return {
             success: false,
             error: error.message
