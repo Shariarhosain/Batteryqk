@@ -413,7 +413,7 @@ uploadImageFromClient: async function(files) {
         console.log('Uploading images with main image name base');
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload',
+            'http://q0c040w8s4gcc40kso48cog0-111554456857:3001/upload',
             formData,
             {
                 headers: formData.getHeaders(),
@@ -1561,7 +1561,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
         console.log('Uploading sub-images only');
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload',
+            'http://q0c040w8s4gcc40kso48cog0-111554456857:3001/upload',
             formData,
             {
                 headers: formData.getHeaders(),
@@ -1587,7 +1587,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
 deleteImageFromServer: async function(filename) {
     try {
         console.log(`Attempting to delete image: ${filename}`);
-        const deleteUrl = `-http://q0c040w8s4gcc40kso48cog0-110434709133:3001/upload/delete/${filename}`;
+        const deleteUrl = `http://q0c040w8s4gcc40kso48cog0-111554456857:3001/delete/${filename}`;
         console.log(`Delete URL: ${deleteUrl}`);
         
         const response = await fetch(deleteUrl, {
