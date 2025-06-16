@@ -1487,7 +1487,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
         
         console.log('Uploading sub-images only');
 
-        const response = await fetch('http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/upload', {
+        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-074304052174:3001/upload', {
             method: 'POST',
             body: formData,
         });
@@ -1514,7 +1514,7 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
 deleteImageFromServer: async function(filename) {
     try {
         console.log(`Attempting to delete image: ${filename}`);
-        const deleteUrl = `http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/delete/${filename}`;
+        const deleteUrl = `http://q0c040w8s4gcc40kso48cog0-074304052174:3001/delete/${filename}`;
         console.log(`Delete URL: ${deleteUrl}`);
         
         const response = await fetch(deleteUrl, {
