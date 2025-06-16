@@ -1482,8 +1482,10 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
             const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
             
             if (subFile.buffer) {
-                const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
-                formData.append('sub_images', blob, newName);
+                formData.append('sub_images', subFile.buffer, {
+                    filename: newName,
+                    contentType: subFile.mimetype,
+                });
             } else {
                 formData.append('sub_images', subFile, newName);
             }
@@ -1491,22 +1493,22 @@ uploadSubImagesOnly: async function(subImageFiles, baseName) {
         
         console.log('Uploading sub-images only');
 
-        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
-            method: 'POST',
-            body: formData,
-        });
-        
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Sub-images upload failed');
-        }
+        const response = await axios.post(
+            'http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload',
+            formData,
+            {
+                headers: formData.getHeaders(),
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+            }
+        );
         
         return {
             success: true,
-            data: data
+            data: response.data
         };
     } catch (error) {
-        console.error('Sub-images upload failed:', error.message);
+        console.error('Sub-images upload failed:', error.response?.data || error.message);
         return {
             success: false,
             error: error.message
