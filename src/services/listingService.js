@@ -399,7 +399,7 @@ uploadImageFromClient: async function (files) {
         }
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0-061159473035:3001/upload',
+            'http://q0c040w8s4gcc40kso48cog0-074304052174:3001/upload',
             form,
             {
                 headers: form.getHeaders(),
