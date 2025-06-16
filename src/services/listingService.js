@@ -1359,7 +1359,7 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
 
                 // Handle new sub-images upload
                 if (files && files.sub_images && files.sub_images.length > 0) {
-                    const subImageUploadResult = await this.uploadSubImagesOnly(files.sub_images, currentListing.name || `listing_${listingId}`);
+                    const subImageUploadResult = await this.uploadImageFromClient(files.sub_images, currentListing.name || `listing_${listingId}`);
                     console.log(`Sub-image upload result for listing ${listingId}:`, subImageUploadResult);
                     
                     if (subImageUploadResult.success && subImageUploadResult.data.sub_images) {
@@ -1467,48 +1467,48 @@ async updateListing(id, data, files, lang = "en", reqDetails = {}) {
     return true;
 },
 
-// New helper function to upload sub-images only
-uploadSubImagesOnly: async function(subImageFiles, baseName) {
-    try {
-        const formData = new FormData();
+// // New helper function to upload sub-images only
+// uploadSubImagesOnly: async function(subImageFiles, baseName) {
+//     try {
+//         const formData = new FormData();
         
-        // Handle sub images with custom naming
-        subImageFiles.forEach((subFile, index) => {
-            const extension = subFile.originalname.split('.').pop();
-            const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
+//         // Handle sub images with custom naming
+//         subImageFiles.forEach((subFile, index) => {
+//             const extension = subFile.originalname.split('.').pop();
+//             const newName = `${baseName}_sub_${Date.now()}_${index + 1}.${extension}`;
             
-            if (subFile.buffer) {
-                const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
-                formData.append('sub_images', blob, newName);
-            } else {
-                formData.append('sub_images', subFile, newName);
-            }
-        });
+//             if (subFile.buffer) {
+//                 const blob = new Blob([subFile.buffer], { type: subFile.mimetype });
+//                 formData.append('sub_images', blob, newName);
+//             } else {
+//                 formData.append('sub_images', subFile, newName);
+//             }
+//         });
         
-        console.log('Uploading sub-images only');
+//         console.log('Uploading sub-images only');
 
-        const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
-            method: 'POST',
-            body: formData,
-        });
+//         const response = await fetch('http://q0c040w8s4gcc40kso48cog0-082014034375:3001/upload', {
+//             method: 'POST',
+//             body: formData,
+//         });
         
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || 'Sub-images upload failed');
-        }
+//         const data = await response.json();
+//         if (!response.ok) {
+//             throw new Error(data.error || 'Sub-images upload failed');
+//         }
         
-        return {
-            success: true,
-            data: data
-        };
-    } catch (error) {
-        console.error('Sub-images upload failed:', error.message);
-        return {
-            success: false,
-            error: error.message
-        };
-    }
-},
+//         return {
+//             success: true,
+//             data: data
+//         };
+//     } catch (error) {
+//         console.error('Sub-images upload failed:', error.message);
+//         return {
+//             success: false,
+//             error: error.message
+//         };
+//     }
+// },
 
 // Helper function to delete image from server
 deleteImageFromServer: async function(filename) {
