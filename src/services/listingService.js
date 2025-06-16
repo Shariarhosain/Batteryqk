@@ -398,15 +398,15 @@ uploadImageFromClient: async function (files) {
             });
         }
 
-        const response = await axios.post(
-            'https://img.batteryqk.com/upload',
-            form,
-            {
-                headers: form.getHeaders(),
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-            }
-        );
+     const response = await axios.post(
+    'http://localhost:3001/upload', // <--- CHANGE TO THIS
+    form,
+    {
+        headers: form.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+    }
+);
 
         return {
             success: true,
