@@ -399,7 +399,7 @@ uploadImageFromClient: async function (files) {
         }
 
         const response = await axios.post(
-            'http://q0c040w8s4gcc40kso48cog0.147.93.111.102.sslip.io/upload',
+            'http://localhost:3100/upload',
             form,
             {
                 headers: form.getHeaders(),
