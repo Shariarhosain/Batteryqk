@@ -141,6 +141,9 @@ const bookingController = {
         }
     },
 
+
+    
+
     async getUserBookings(req, res) {
         try {
             const lang = req.query.lang || req.headers['accept-language'] || 'en';
