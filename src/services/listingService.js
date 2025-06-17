@@ -214,13 +214,15 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
         },
     });
 
-    // --- 4. Handle All Background Tasks ---
+    // --- 4. Handle All Background Tasks (INCLUDING IMAGE UPLOAD) ---
     setImmediate(async () => {
         try {
             let finalListing = newListingWithRelations;
             
-            // Upload images if provided
+            // *** IMAGE UPLOAD HAPPENS HERE IN BACKGROUND ***
             if (files && (files.main_image || files.sub_images)) {
+                console.log(`Starting background image upload for listing ${newListingWithRelations.id}`);
+                
                 const uploadResult = await this.uploadImageFromClient(files);
                 
                 if (uploadResult.success) {
@@ -252,9 +254,9 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
                         }
                     });
                     
-                    console.log(`Images uploaded and updated for listing ${newListingWithRelations.id}`);
+                    console.log(`Background image upload completed for listing ${newListingWithRelations.id}`);
                 } else {
-                    console.error(`Image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
+                    console.error(`Background image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
                 }
             }
 
@@ -285,7 +287,6 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
             // Create Arabic cache for individual listing in background
             if (deeplClient && redisClient.isReady) {
                 try {
-                    // Translate English data to Arabic and cache
                     const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
                     await redisClient.setEx(
                         cacheKeys.listingAr(enhancedFinalListing.id),
