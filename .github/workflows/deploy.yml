@@ -36,3 +36,4 @@ jobs:
             npm install
             npx prisma generate
             pm2 restart batteryqk || pm2 start src/app.js --name batteryqk
+            pm2 save
