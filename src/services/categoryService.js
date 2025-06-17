@@ -227,7 +227,7 @@ const categoryService = {
                     }
                 }
 
-                // Invalidate all categories cache
+             
                 try {
                     await redisClient.del(cacheKeys.allCategoriesAr());
                 } catch (error) {
