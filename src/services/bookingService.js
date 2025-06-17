@@ -270,14 +270,43 @@ const bookingService = {
                     await sendBookingEmails(booking, listing, user, lang);
 
                     if (redisClient.isReady && deeplClient) {
-                        const cacheKeysToDel = [cacheKeys.userBookingsAr(user.uid), cacheKeys.listingBookingsAr(listingId)];
+                        const cacheKeysToDel = [
+                            cacheKeys.userBookingsAr(user.uid), 
+                            cacheKeys.listingBookingsAr(listingId),
+                            cacheKeys.listingAr(listingId)
+                        ];
                         const allBookingsKeys = await redisClient.keys(cacheKeys.allBookingsAr('*'));
                         if (allBookingsKeys.length) cacheKeysToDel.push(...allBookingsKeys);
                         if (cacheKeysToDel.length > 0) await redisClient.del(cacheKeysToDel);
 
-                        const listingCacheKey = cacheKeys.listingAr(listingId);
-                        await redisClient.del(listingCacheKey);
+                        // Get booking with all includes for caching
+                        const bookingWithIncludes = await prisma.booking.findUnique({
+                            where: { id: booking.id },
+                            include: { user: true, listing: true, review: true, reward: true }
+                        });
                         
+                        if (bookingWithIncludes) {
+                            // Translate and cache booking in Arabic
+                            const translatedBooking = await translateBookingFields(bookingWithIncludes, 'AR', 'EN');
+                            const bookingCacheKey = cacheKeys.bookingAr(booking.id);
+                            await redisClient.setEx(bookingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
+                        }
+
+                        // Update user bookings cache in Arabic
+                        const userBookings = await prisma.booking.findMany({
+                            where: { user: { uid: user.uid } },
+                            include: { listing: true, review: true, reward: true },
+                            orderBy: { createdAt: 'desc' }
+                        });
+                        
+                        if (userBookings.length > 0) {
+                            const translatedUserBookings = await Promise.all(
+                                userBookings.map(b => translateBookingFields(b, 'AR', 'EN'))
+                            );
+                            await redisClient.setEx(cacheKeys.userBookingsAr(user.uid), AR_CACHE_EXPIRATION, JSON.stringify(translatedUserBookings));
+                        }
+                        
+                        // Update listing cache in Arabic
                         const currentListing = await prisma.listing.findUnique({
                             where: { id: listingId },
                             include: {
@@ -289,7 +318,12 @@ const bookingService = {
                                     select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
                                 },
                                 bookings: {
-                                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true ,paymentMethod: true },
+                                    select: { 
+                                        id: true, status: true, createdAt: true, 
+                                        user: { select: { fname: true, lname: true } }, 
+                                        bookingDate: true, booking_hours: true, additionalNote: true, 
+                                        ageGroup: true, numberOfPersons: true, paymentMethod: true 
+                                    },
                                 }
                             }
                         });
@@ -319,26 +353,7 @@ const bookingService = {
                             };
                             
                             const translatedListing = await translateListingFields(listingWithStats, "AR", "EN");
-                            await redisClient.setEx(listingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedListing));
-                        }
-
-                        // Cache translated booking in Arabic
-                        const bookingCacheKey = cacheKeys.bookingAr(booking.id);
-                        const translatedBooking = await translateBookingFields(booking, 'AR', 'EN');
-                        await redisClient.setEx(bookingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
-                    }
-
-                    // If user sent request in English, translate and cache in Arabic
-                    if (lang === 'en' && deeplClient && redisClient.isReady) {
-                        const bookingWithIncludes = await prisma.booking.findUnique({
-                            where: { id: booking.id },
-                            include: { user: true, listing: true, review: true, reward: true }
-                        });
-                        
-                        if (bookingWithIncludes) {
-                            const translatedBooking = await translateBookingFields(bookingWithIncludes, 'AR', 'EN');
-                            const bookingCacheKey = cacheKeys.bookingAr(booking.id);
-                            await redisClient.setEx(bookingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
+                            await redisClient.setEx(cacheKeys.listingAr(listingId), AR_CACHE_EXPIRATION, JSON.stringify(translatedListing));
                         }
                     }
                 } catch (bgError) {

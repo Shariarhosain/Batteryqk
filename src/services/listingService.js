@@ -157,6 +157,12 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
         mainCategoryIds, subCategoryIds, specificItemIds 
     } = data;
 
+    console.log('Received category data:', {
+        mainCategoryIds,
+        subCategoryIds,
+        specificItemIds
+    });
+
     // --- 1. Prepare Data for Database (store in English by default) ---
     const listingDataForDb = {
         price: price ? parseFloat(price) : null,
@@ -189,20 +195,53 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
         ]);
     }
     
-    // --- 2. Connect Category Relationships ---
-    const mainCategoryIdsArray = Array.isArray(mainCategoryIds) ? mainCategoryIds : (mainCategoryIds ? [mainCategoryIds] : []);
-    const subCategoryIdsArray = Array.isArray(subCategoryIds) ? subCategoryIds : (subCategoryIds ? [subCategoryIds] : []);
-    const specificItemIdsArray = Array.isArray(specificItemIds) ? specificItemIds : (specificItemIds ? [specificItemIds] : []);
+    // --- 2. Connect Category Relationships (FIXED) ---
+    const processCategories = (categoryIds) => {
+        if (!categoryIds) return [];
+        
+        // Handle if it's a string (comma-separated)
+        if (typeof categoryIds === 'string') {
+            return categoryIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+        }
+        
+        // Handle if it's already an array
+        if (Array.isArray(categoryIds)) {
+            return categoryIds.map(id => parseInt(id)).filter(id => !isNaN(id));
+        }
+        
+        // Handle single number
+        const singleId = parseInt(categoryIds);
+        return !isNaN(singleId) ? [singleId] : [];
+    };
+
+    const mainCategoryIdsArray = processCategories(mainCategoryIds);
+    const subCategoryIdsArray = processCategories(subCategoryIds);
+    const specificItemIdsArray = processCategories(specificItemIds);
     
-    listingDataForDb.selectedMainCategories = {
-        connect: mainCategoryIdsArray.map(id => ({ id: parseInt(id) }))
-    };
-    listingDataForDb.selectedSubCategories = {
-        connect: subCategoryIdsArray.map(id => ({ id: parseInt(id) }))
-    };
-    listingDataForDb.selectedSpecificItems = {
-        connect: specificItemIdsArray.map(id => ({ id: parseInt(id) }))
-    };
+    console.log('Processed category arrays:', {
+        mainCategoryIdsArray,
+        subCategoryIdsArray,
+        specificItemIdsArray
+    });
+
+    // Only add connections if arrays are not empty
+    if (mainCategoryIdsArray.length > 0) {
+        listingDataForDb.selectedMainCategories = {
+            connect: mainCategoryIdsArray.map(id => ({ id }))
+        };
+    }
+    
+    if (subCategoryIdsArray.length > 0) {
+        listingDataForDb.selectedSubCategories = {
+            connect: subCategoryIdsArray.map(id => ({ id }))
+        };
+    }
+    
+    if (specificItemIdsArray.length > 0) {
+        listingDataForDb.selectedSpecificItems = {
+            connect: specificItemIdsArray.map(id => ({ id }))
+        };
+    }
 
     // --- 3. Create the Listing First ---
     const newListingWithRelations = await prisma.listing.create({
@@ -214,146 +253,164 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
         },
     });
 
-    // --- 4. Handle All Background Tasks (INCLUDING IMAGE UPLOAD) ---
-    setImmediate(async () => {
-        try {
-            let finalListing = newListingWithRelations;
-            
-            // *** IMAGE UPLOAD HAPPENS HERE IN BACKGROUND ***
-            if (files && (files.main_image || files.sub_images)) {
-                console.log(`Starting background image upload for listing ${newListingWithRelations.id}`);
-                
-                const uploadResult = await this.uploadImageFromClient(files);
-                
-                if (uploadResult.success) {
-                    const updateData = {};
-                    
-                    if (uploadResult.data.main_image) {
-                        updateData.main_image = uploadResult.data.main_image.url;
-                    }
-                    
-                    if (uploadResult.data.sub_images && uploadResult.data.sub_images.length > 0) {
-                        updateData.sub_images = uploadResult.data.sub_images.map(img => img.url);
-                    }
-                    
-                    // Update listing with image URLs and get final listing with all relations
-                    finalListing = await prisma.listing.update({
-                        where: { id: newListingWithRelations.id },
-                        data: updateData,
-                        include: {
-                            selectedMainCategories: true,
-                            selectedSubCategories: true,
-                            selectedSpecificItems: true,
-                            reviews: {
-                                where: { status: 'ACCEPTED' },
-                                select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-                            },
-                            bookings: {
-                                select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
-                            }
-                        }
-                    });
-                    
-                    console.log(`Background image upload completed for listing ${newListingWithRelations.id}`);
-                } else {
-                    console.error(`Background image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
-                }
-            }
-
-            // Calculate stats for the final listing
-            const acceptedReviews = finalListing.reviews || [];
-            const totalReviews = acceptedReviews.length;
-            const averageRating = totalReviews > 0 
-                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
-                : 0;
-
-            const ratingDistribution = {
-                5: acceptedReviews.filter(r => r.rating === 5).length,
-                4: acceptedReviews.filter(r => r.rating === 4).length,
-                3: acceptedReviews.filter(r => r.rating === 3).length,
-                2: acceptedReviews.filter(r => r.rating === 2).length,
-                1: acceptedReviews.filter(r => r.rating === 1).length
-            };
-
-            const enhancedFinalListing = {
-                ...finalListing,
-                averageRating: Math.round(averageRating * 10) / 10,
-                totalReviews,
-                ratingDistribution,
-                totalBookings: (finalListing.bookings || []).length,
-                confirmedBookings: (finalListing.bookings || []).filter(b => b.status === 'CONFIRMED').length
-            };
-
-            // Create Arabic cache for individual listing in background
-            if (deeplClient && redisClient.isReady) {
-                try {
-                    const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
-                    await redisClient.setEx(
-                        cacheKeys.listingAr(enhancedFinalListing.id),
-                        AR_CACHE_EXPIRATION,
-                        JSON.stringify(translatedListing)
-                    );
-                    console.log(`Redis: AR Cache - Cached new listing ${enhancedFinalListing.id} in Arabic`);
-                } catch (cacheError) {
-                    console.error(`Redis: AR Cache - Error caching new listing ${enhancedFinalListing.id} ->`, cacheError.message);
-                }
-            }
-
-            // Handle notifications and emails
-            const allUsers = await prisma.user.findMany({
-                select: { id: true, email: true, fname: true },
-            });
-
-            const notificationPromises = allUsers.map(user => 
-                prisma.notification.create({
-                    data: {
-                        userId: user.id,
-                        title: "New Listing Available",
-                        message: `A new listing "${enhancedFinalListing.name || 'Untitled'}" has been added.`,
-                        type: 'GENERAL',
-                        entityId: enhancedFinalListing.id.toString(),
-                        entityType: 'Listing'
-                    }
-                })
-            );
-            await Promise.all(notificationPromises);
-
-            const listingDetails = `
-Name: ${enhancedFinalListing.name || 'N/A'}
-Price: ${enhancedFinalListing.price ? `$${enhancedFinalListing.price}` : 'N/A'}
-Description: ${enhancedFinalListing.description || 'No description available.'}
-Location: ${enhancedFinalListing.location?.join(', ') || 'N/A'}
-Facilities: ${enhancedFinalListing.facilities?.join(', ') || 'N/A'}
-Main Categories: ${enhancedFinalListing.selectedMainCategories?.map(cat => cat.name).join(', ') || 'N/A'}
-Sub Categories: ${enhancedFinalListing.selectedSubCategories?.map(cat => cat.name).join(', ') || 'N/A'}
-Specific Items: ${enhancedFinalListing.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
-            `.trim();
-
-            const emailPromises = allUsers.map(user => sendMail(
-                user.email,
-                "New Listing Available - Full Details",
-                `Hello ${user.fname || 'there'},\n\nA new listing has been added. Here are the details:\n\n${listingDetails}\n\nBest regards,\nYour Team`,
-                "en",
-                { name: user.fname || 'there', listingDetails: listingDetails }
-            ).catch(err => console.error(`Failed to send email to ${user.email}:`, err)));
-            
-            await Promise.allSettled(emailPromises);
-            console.log(`Background tasks completed for new listing ${enhancedFinalListing.id}`);
-
-        } catch (error) {
-            console.error(`Error in background task for listing ${newListingWithRelations.id}:`, error);
-        }
-
-        recordAuditLog(AuditLogAction.LISTING_CREATED, {
-            userId: reqDetails.actorUserId,
-            entityName: 'Listing',
-            entityId: newListingWithRelations.id,
-            newValues: newListingWithRelations,
-            description: `Listing '${newListingWithRelations.name || newListingWithRelations.id}' created.`,
-            ipAddress: reqDetails.ipAddress,
-            userAgent: reqDetails.userAgent,
-        });
+    console.log('Created listing with relations:', {
+        id: newListingWithRelations.id,
+        mainCategories: newListingWithRelations.selectedMainCategories?.length || 0,
+        subCategories: newListingWithRelations.selectedSubCategories?.length || 0,
+        specificItems: newListingWithRelations.selectedSpecificItems?.length || 0
     });
+
+    // --- 4. Handle All Background Tasks (INCLUDING IMAGE UPLOAD) ---
+        setImmediate(async () => {
+            try {
+                let finalListing = newListingWithRelations;
+                
+                // *** IMAGE UPLOAD HAPPENS HERE IN BACKGROUND ***
+                if (files && (files.main_image || files.sub_images)) {
+                    console.log(`Starting background image upload for listing ${newListingWithRelations.id}`);
+                    
+                    const uploadResult = await this.uploadImageFromClient(files);
+                    
+                    if (uploadResult.success) {
+                        const updateData = {};
+                        
+                        if (uploadResult.data.main_image) {
+                            updateData.main_image = uploadResult.data.main_image.url;
+                        }
+                        
+                        if (uploadResult.data.sub_images && uploadResult.data.sub_images.length > 0) {
+                            updateData.sub_images = uploadResult.data.sub_images.map(img => img.url);
+                        }
+                        
+                        // Update listing with image URLs and get final listing with all relations
+                        finalListing = await prisma.listing.update({
+                            where: { id: newListingWithRelations.id },
+                            data: updateData,
+                            include: {
+                                selectedMainCategories: true,
+                                selectedSubCategories: true,
+                                selectedSpecificItems: true,
+                                reviews: {
+                                    where: { status: 'ACCEPTED' },
+                                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                                },
+                                bookings: {
+                                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true, paymentMethod: true }
+                                }
+                            }
+                        });
+                        
+                        console.log(`Background image upload completed for listing ${newListingWithRelations.id}`);
+                    } else {
+                        console.error(`Background image upload failed for listing ${newListingWithRelations.id}:`, uploadResult.error);
+                    }
+                }
+
+                // Calculate stats for the final listing
+                const acceptedReviews = finalListing.reviews || [];
+                const totalReviews = acceptedReviews.length;
+                const averageRating = totalReviews > 0 
+                    ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews 
+                    : 0;
+
+                const ratingDistribution = {
+                    5: acceptedReviews.filter(r => r.rating === 5).length,
+                    4: acceptedReviews.filter(r => r.rating === 4).length,
+                    3: acceptedReviews.filter(r => r.rating === 3).length,
+                    2: acceptedReviews.filter(r => r.rating === 2).length,
+                    1: acceptedReviews.filter(r => r.rating === 1).length
+                };
+
+                const enhancedFinalListing = {
+                    ...finalListing,
+                    averageRating: Math.round(averageRating * 10) / 10,
+                    totalReviews,
+                    ratingDistribution,
+                    totalBookings: (finalListing.bookings || []).length,
+                    confirmedBookings: (finalListing.bookings || []).filter(b => b.status === 'CONFIRMED').length
+                };
+
+                // Create Arabic cache for individual listing in background
+                if (deeplClient && redisClient.isReady) {
+                    try {
+                        const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
+                        await redisClient.setEx(
+                            cacheKeys.listingAr(enhancedFinalListing.id),
+                            AR_CACHE_EXPIRATION,
+                            JSON.stringify(translatedListing)
+                        );
+                        console.log(`Redis: AR Cache - Cached new listing ${enhancedFinalListing.id} in Arabic`);
+                    } catch (cacheError) {
+                        console.error(`Redis: AR Cache - Error caching new listing ${enhancedFinalListing.id} ->`, cacheError.message);
+                    }
+
+                    // Clear all listings cache to force refresh
+                    try {
+                        const keys = await redisClient.keys(cacheKeys.allListingsAr('*'));
+                        if (keys.length > 0) {
+                            await redisClient.del(keys);
+                            console.log(`Redis: AR Cache - Cleared all listings cache after new listing creation`);
+                        }
+                    } catch (clearError) {
+                        console.error(`Redis: AR Cache - Error clearing all listings cache ->`, clearError.message);
+                    }
+                }
+
+                // Handle notifications and emails
+                const allUsers = await prisma.user.findMany({
+                    select: { id: true, email: true, fname: true },
+                });
+
+                const notificationPromises = allUsers.map(user => 
+                    prisma.notification.create({
+                        data: {
+                            userId: user.id,
+                            title: "New Listing Available",
+                            message: `A new listing "${enhancedFinalListing.name || 'Untitled'}" has been added.`,
+                            type: 'GENERAL',
+                            entityId: enhancedFinalListing.id.toString(),
+                            entityType: 'Listing'
+                        }
+                    })
+                );
+                await Promise.all(notificationPromises);
+
+                const listingDetails = `
+    Name: ${enhancedFinalListing.name || 'N/A'}
+    Price: ${enhancedFinalListing.price ? `$${enhancedFinalListing.price}` : 'N/A'}
+    Description: ${enhancedFinalListing.description || 'No description available.'}
+    Location: ${enhancedFinalListing.location?.join(', ') || 'N/A'}
+    Facilities: ${enhancedFinalListing.facilities?.join(', ') || 'N/A'}
+    Main Categories: ${enhancedFinalListing.selectedMainCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+    Sub Categories: ${enhancedFinalListing.selectedSubCategories?.map(cat => cat.name).join(', ') || 'N/A'}
+    Specific Items: ${enhancedFinalListing.selectedSpecificItems?.map(item => item.name).join(', ') || 'N/A'}
+                `.trim();
+
+                const emailPromises = allUsers.map(user => sendMail(
+                    user.email,
+                    "New Listing Available - Full Details",
+                    `Hello ${user.fname || 'there'},\n\nA new listing has been added. Here are the details:\n\n${listingDetails}\n\nBest regards,\nYour Team`,
+                    "en",
+                    { name: user.fname || 'there', listingDetails: listingDetails }
+                ).catch(err => console.error(`Failed to send email to ${user.email}:`, err)));
+                
+                await Promise.allSettled(emailPromises);
+                console.log(`Background tasks completed for new listing ${enhancedFinalListing.id}`);
+
+            } catch (error) {
+                console.error(`Error in background task for listing ${newListingWithRelations.id}:`, error);
+            }
+
+            recordAuditLog(AuditLogAction.LISTING_CREATED, {
+                userId: reqDetails.actorUserId,
+                entityName: 'Listing',
+                entityId: newListingWithRelations.id,
+                newValues: newListingWithRelations,
+                description: `Listing '${newListingWithRelations.name || newListingWithRelations.id}' created.`,
+                ipAddress: reqDetails.ipAddress,
+                userAgent: reqDetails.userAgent,
+            });
+        });
 
     // --- 5. Return Response Immediately ---
     return {
