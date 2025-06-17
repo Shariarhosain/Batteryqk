@@ -35,5 +35,6 @@ jobs:
             git pull origin main
             npm install
             npx prisma generate
+            export PATH=/nix/store/wlpq101dsifq98z2bk300x4dk80wcybr-nodejs-18.20.5/lib/node_modules/pm2/bin:$PATH
             pm2 restart batteryqk || pm2 start src/app.js --name batteryqk
             pm2 save
