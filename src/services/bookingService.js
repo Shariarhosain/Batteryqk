@@ -278,30 +278,30 @@ const bookingService = {
                         const listingCacheKey = cacheKeys.listingAr(listingId);
                         await redisClient.del(listingCacheKey);
                         
-        const currentListing = await prisma.listing.findUnique({
-            where: { id: listingId },
-            include: {
-                selectedMainCategories: true,
-                selectedSubCategories: true,
-                selectedSpecificItems: true,
-                reviews: {
-                    where: { status: 'ACCEPTED' },
-                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
-                },
-                bookings: {
-                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true ,paymentMethod: true },
-                }
-            }
-        });
+                        const currentListing = await prisma.listing.findUnique({
+                            where: { id: listingId },
+                            include: {
+                                selectedMainCategories: true,
+                                selectedSubCategories: true,
+                                selectedSpecificItems: true,
+                                reviews: {
+                                    where: { status: 'ACCEPTED' },
+                                    select: { rating: true, comment: true, createdAt: true, user: { select: { fname: true, lname: true } } }
+                                },
+                                bookings: {
+                                    select: { id: true, status: true, createdAt: true, user: { select: { fname: true, lname: true } }, status: true, bookingDate: true, booking_hours: true, additionalNote: true, ageGroup: true, numberOfPersons: true ,paymentMethod: true },
+                                }
+                            }
+                        });
 
-        if (currentListing) {
-            const acceptedReviews = currentListing.reviews;
-            const totalReviews = acceptedReviews.length;
-            const averageRating = totalReviews > 0
-                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews
-                : 0;
+                        if (currentListing) {
+                            const acceptedReviews = currentListing.reviews;
+                            const totalReviews = acceptedReviews.length;
+                            const averageRating = totalReviews > 0
+                                ? acceptedReviews.reduce((sum, review) => sum + review.rating, 0) / totalReviews
+                                : 0;
 
-            const ratingDistribution = {
+                            const ratingDistribution = {
                                 5: acceptedReviews.filter(r => r.rating === 5).length,
                                 4: acceptedReviews.filter(r => r.rating === 4).length,
                                 3: acceptedReviews.filter(r => r.rating === 3).length,
@@ -320,6 +320,25 @@ const bookingService = {
                             
                             const translatedListing = await translateListingFields(listingWithStats, "AR", "EN");
                             await redisClient.setEx(listingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedListing));
+                        }
+
+                        // Cache translated booking in Arabic
+                        const bookingCacheKey = cacheKeys.bookingAr(booking.id);
+                        const translatedBooking = await translateBookingFields(booking, 'AR', 'EN');
+                        await redisClient.setEx(bookingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
+                    }
+
+                    // If user sent request in English, translate and cache in Arabic
+                    if (lang === 'en' && deeplClient && redisClient.isReady) {
+                        const bookingWithIncludes = await prisma.booking.findUnique({
+                            where: { id: booking.id },
+                            include: { user: true, listing: true, review: true, reward: true }
+                        });
+                        
+                        if (bookingWithIncludes) {
+                            const translatedBooking = await translateBookingFields(bookingWithIncludes, 'AR', 'EN');
+                            const bookingCacheKey = cacheKeys.bookingAr(booking.id);
+                            await redisClient.setEx(bookingCacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
                         }
                     }
                 } catch (bgError) {
@@ -351,30 +370,18 @@ const bookingService = {
             const pageNum = parseInt(page);
             const limitNum = parseInt(limit);
             const skip = (pageNum - 1) * limitNum;
-            const filterHash = createFilterHash({ ...restFilters, page: pageNum, limit: limitNum });
-            const cacheKey = cacheKeys.allBookingsAr(filterHash);
 
-            // Check cache first
-            if (lang === 'ar' && redisClient.isReady) {
-                const cachedData = await redisClient.get(cacheKey);
-                if (cachedData) {
-                    const parsed = JSON.parse(cachedData);
-                    console.log('Returning cached bookings:', parsed.bookings.length);
-                    return parsed;
-                }
-            }
-            
             // Build where clause from filters
             const whereClause = {
                 ...(restFilters.status && { status: restFilters.status }),
                 ...(restFilters.listingId && { listingId: parseInt(restFilters.listingId) }),
             };
 
-            // Get data from database
-            const [bookings, total] = await prisma.$transaction([
+            // Get booking IDs from database first
+            const [bookingIds, total] = await prisma.$transaction([
                 prisma.booking.findMany({
                     where: whereClause,
-                    include: { user: {select: {uid: true, fname: true, lname: true}}, listing: true, review: true, reward: true },
+                    select: { id: true },
                     orderBy: { createdAt: 'desc' },
                     skip,
                     take: limitNum
@@ -382,100 +389,131 @@ const bookingService = {
                 prisma.booking.count({ where: whereClause })
             ]);
 
-            console.log('Database bookings found:', bookings.length);
+            console.log('Database booking IDs found:', bookingIds.length);
 
             // Check if no bookings available in database
-            if (bookings.length === 0) {
-                const emptyResult = {
+            if (bookingIds.length === 0) {
+                return {
                     bookings: [],
                     pagination: { total: 0, page: pageNum, limit: limitNum, totalPages: 0 },
                     message: lang === 'ar' ? 'لا توجد حجوزات متاحة' : 'No bookings available'
                 };
-                
-                // Cache the empty result to avoid repeated DB queries
-                if (lang === 'ar' && redisClient.isReady) {
-                    await redisClient.setEx(cacheKey, 300, JSON.stringify(emptyResult)); // Cache for 5 minutes
-                }
-                
-                return emptyResult;
             }
 
-            let result = {
-                bookings,
+            const bookings = [];
+            const missingBookingIds = [];
+
+            // Try to get each booking from individual cache entries
+            if (lang === 'ar' && redisClient.isReady) {
+                for (const { id } of bookingIds) {
+                    const cacheKey = cacheKeys.bookingAr(id);
+                    const cachedBooking = await redisClient.get(cacheKey);
+                    
+                    if (cachedBooking) {
+                        bookings.push(JSON.parse(cachedBooking));
+                    } else {
+                        missingBookingIds.push(id);
+                    }
+                }
+                console.log(`Found ${bookings.length} cached bookings, ${missingBookingIds.length} missing from cache`);
+            } else {
+                // If not Arabic or Redis not ready, get all from DB
+                missingBookingIds.push(...bookingIds.map(b => b.id));
+            }
+
+            // Fetch missing bookings from database
+            if (missingBookingIds.length > 0) {
+                const missingBookings = await prisma.booking.findMany({
+                    where: { id: { in: missingBookingIds } },
+                    include: { user: {select: {uid: true, fname: true, lname: true}}, listing: true, review: true, reward: true },
+                    orderBy: { createdAt: 'desc' }
+                });
+
+                // Process missing bookings (translate if needed and cache individually)
+                for (const booking of missingBookings) {
+                    let processedBooking = booking;
+
+                    if (lang === 'ar' && deeplClient) {
+                        const translatedBooking = { ...booking };
+                        
+                        // Translate booking fields
+                        if (booking.additionalNote) {
+                            translatedBooking.additionalNote = await translateText(booking.additionalNote, 'AR', 'EN');
+                        }
+                        if (booking.ageGroup) {
+                            translatedBooking.ageGroup = await translateText(booking.ageGroup, 'AR', 'EN');
+                        }
+                        if (booking.status) {
+                            translatedBooking.status = await translateText(booking.status, 'AR', 'EN');
+                        }
+                        if (booking.booking_hours) {
+                            translatedBooking.booking_hours = await translateText(booking.booking_hours, 'AR', 'EN');
+                        }
+                        if (booking.paymentMethod) {
+                            translatedBooking.paymentMethod = await translateText(booking.paymentMethod, 'AR', 'EN');
+                        }
+                        
+                        // Translate listing fields if present
+                        if (booking.listing) {
+                            translatedBooking.listing = { ...booking.listing };
+                            
+                            if (booking.listing.name) {
+                                translatedBooking.listing.name = await translateText(booking.listing.name, 'AR', 'EN');
+                            }
+                            if (booking.listing.description) {
+                                translatedBooking.listing.description = await translateText(booking.listing.description, 'AR', 'EN');
+                            }
+                            if (Array.isArray(booking.listing.agegroup)) {
+                                translatedBooking.listing.agegroup = await translateArrayFields(booking.listing.agegroup, 'AR', 'EN');
+                            }
+                            if (Array.isArray(booking.listing.location)) {
+                                translatedBooking.listing.location = await translateArrayFields(booking.listing.location, 'AR', 'EN');
+                            }
+                            if (Array.isArray(booking.listing.facilities)) {
+                                translatedBooking.listing.facilities = await translateArrayFields(booking.listing.facilities, 'AR', 'EN');
+                            }
+                            if (Array.isArray(booking.listing.operatingHours)) {
+                                translatedBooking.listing.operatingHours = await translateArrayFields(booking.listing.operatingHours, 'AR', 'EN');
+                            }
+                        }
+                        
+                        // Translate review comment if present
+                        if (booking.review && booking.review.comment) {
+                            translatedBooking.review = {
+                                ...booking.review,
+                                comment: await translateText(booking.review.comment, 'AR', 'EN')
+                            };
+                        }
+                        
+                        // Translate reward fields if present
+                        if (booking.reward) {
+                            translatedBooking.reward = {
+                                ...booking.reward,
+                                description: await translateText(booking.reward.description, 'AR', 'EN'),
+                                category: await translateText(booking.reward.category, 'AR', 'EN')
+                            };
+                        }
+                        
+                        processedBooking = translatedBooking;
+
+                        // Cache the translated booking individually
+                        if (redisClient.isReady) {
+                            const cacheKey = cacheKeys.bookingAr(booking.id);
+                            await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(translatedBooking));
+                        }
+                    }
+
+                    bookings.push(processedBooking);
+                }
+            }
+
+            // Sort bookings to maintain original order (by creation date desc)
+            const sortedBookings = bookings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            return {
+                bookings: sortedBookings,
                 pagination: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) }
             };
-
-            // Translate if Arabic and deeplClient is available
-            if (lang === 'ar' && deeplClient) {
-                result.bookings = await Promise.all(bookings.map(async (booking) => {
-                    const translatedBooking = { ...booking };
-                    
-                    // Translate booking fields
-                    if (booking.additionalNote) {
-                        translatedBooking.additionalNote = await translateText(booking.additionalNote, 'AR', 'EN');
-                    }
-                    if (booking.ageGroup) {
-                        translatedBooking.ageGroup = await translateText(booking.ageGroup, 'AR', 'EN');
-                    }
-                    if (booking.status) {
-                        translatedBooking.status = await translateText(booking.status, 'AR', 'EN');
-                    }
-                    if (booking.booking_hours) {
-                        translatedBooking.booking_hours = await translateText(booking.booking_hours, 'AR', 'EN');
-                    }
-                    if (booking.paymentMethod) {
-                        translatedBooking.paymentMethod = await translateText(booking.paymentMethod, 'AR', 'EN');
-                    }
-                    
-                    // Translate listing fields if present
-                    if (booking.listing) {
-                        translatedBooking.listing = { ...booking.listing };
-                        
-                        if (booking.listing.name) {
-                            translatedBooking.listing.name = await translateText(booking.listing.name, 'AR', 'EN');
-                        }
-                        if (booking.listing.description) {
-                            translatedBooking.listing.description = await translateText(booking.listing.description, 'AR', 'EN');
-                        }
-                        if (Array.isArray(booking.listing.agegroup)) {
-                            translatedBooking.listing.agegroup = await translateArrayFields(booking.listing.agegroup, 'AR', 'EN');
-                        }
-                        if (Array.isArray(booking.listing.location)) {
-                            translatedBooking.listing.location = await translateArrayFields(booking.listing.location, 'AR', 'EN');
-                        }
-                        if (Array.isArray(booking.listing.facilities)) {
-                            translatedBooking.listing.facilities = await translateArrayFields(booking.listing.facilities, 'AR', 'EN');
-                        }
-                        if (Array.isArray(booking.listing.operatingHours)) {
-                            translatedBooking.listing.operatingHours = await translateArrayFields(booking.listing.operatingHours, 'AR', 'EN');
-                        }
-                    }
-                    
-                    // Translate review comment if present
-                    if (booking.review && booking.review.comment) {
-                        translatedBooking.review = {
-                            ...booking.review,
-                            comment: await translateText(booking.review.comment, 'AR', 'EN')
-                        };
-                    }
-                    
-                    // Translate reward fields if present
-                    if (booking.reward) {
-                        translatedBooking.reward = {
-                            ...booking.reward,
-                            description: await translateText(booking.reward.description, 'AR', 'EN'),
-                            category: await translateText(booking.reward.category, 'AR', 'EN')
-                        };
-                    }
-                    
-                    return translatedBooking;
-                }));
-                
-                // Cache translated results
-                if (redisClient.isReady) await redisClient.setEx(cacheKey, AR_CACHE_EXPIRATION, JSON.stringify(result));
-            }
-
-            return result;
         } catch (error) {
             console.error(`Failed to get all bookings: ${error.message}`);
             throw new Error(`Failed to get all bookings: ${error.message}`);

@@ -157,14 +157,20 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
         mainCategoryIds, subCategoryIds, specificItemIds 
     } = data;
 
-    // --- 1. Prepare Data for Database (without images initially) ---
+    // --- 1. Prepare Data for Database (store in English by default) ---
     const listingDataForDb = {
         price: price ? parseFloat(price) : null,
         main_image: null, // Will be updated after upload
         sub_images: [], // Will be updated after upload
+        name: name || null,
+        description: description || null,
+        agegroup: agegroup ? (Array.isArray(agegroup) ? agegroup : [agegroup]) : [],
+        location: location ? (Array.isArray(location) ? location : [location]) : [],
+        facilities: facilities ? (Array.isArray(facilities) ? facilities : [facilities]) : [],
+        operatingHours: operatingHours ? (Array.isArray(operatingHours) ? operatingHours : [operatingHours]) : [],
     };
 
-    // Translate text fields if the input language is Arabic
+    // If input is Arabic, translate to English for database storage
     if (lang === "ar" && deeplClient) {
         [
             listingDataForDb.name,
@@ -181,13 +187,6 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
             facilities ? translateArrayFields(Array.isArray(facilities) ? facilities : [facilities], "EN-US", "AR") : [],
             operatingHours ? translateArrayFields(Array.isArray(operatingHours) ? operatingHours : [operatingHours], "EN-US", "AR") : [],
         ]);
-    } else {
-        listingDataForDb.name = name || null;
-        listingDataForDb.description = description || null;
-        listingDataForDb.agegroup = agegroup ? (Array.isArray(agegroup) ? agegroup : [agegroup]) : [];
-        listingDataForDb.location = location ? (Array.isArray(location) ? location : [location]) : [];
-        listingDataForDb.facilities = facilities ? (Array.isArray(facilities) ? facilities : [facilities]) : [];
-        listingDataForDb.operatingHours = operatingHours ? (Array.isArray(operatingHours) ? operatingHours : [operatingHours]) : [];
     }
     
     // --- 2. Connect Category Relationships ---
@@ -283,19 +282,17 @@ async createListing(data, files, lang = "en", reqDetails = {}) {
                 confirmedBookings: (finalListing.bookings || []).filter(b => b.status === 'CONFIRMED').length
             };
 
-            // Update Arabic cache for individual listing and clear all listings cache
+            // Create Arabic cache for individual listing in background
             if (deeplClient && redisClient.isReady) {
                 try {
-                    // Translate and cache individual listing
+                    // Translate English data to Arabic and cache
                     const translatedListing = await translateListingFields(enhancedFinalListing, "AR", "EN");
                     await redisClient.setEx(
                         cacheKeys.listingAr(enhancedFinalListing.id),
                         AR_CACHE_EXPIRATION,
                         JSON.stringify(translatedListing)
                     );
-                    console.log(`Redis: AR Cache - Cached new listing ${enhancedFinalListing.id}`);
-
-                 
+                    console.log(`Redis: AR Cache - Cached new listing ${enhancedFinalListing.id} in Arabic`);
                 } catch (cacheError) {
                     console.error(`Redis: AR Cache - Error caching new listing ${enhancedFinalListing.id} ->`, cacheError.message);
                 }
