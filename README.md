@@ -217,7 +217,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Made with ❤️ by the BatteryQK Team**
+**Made with ❤️ by the  MTS Team(backend)**
 
 [![GitHub Stars](https://img.shields.io/github/stars/yourusername/batteryqk?style=social)](https://github.com/yourusername/batteryqk)
 [![GitHub Forks](https://img.shields.io/github/forks/yourusername/batteryqk?style=social)](https://github.com/yourusername/batteryqk)
