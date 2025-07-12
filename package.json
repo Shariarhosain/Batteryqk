@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "echo \"No tests yet\"",
-    "start": "node src/app.js",
-    "dev": "nodemon src/app.js"
+    "start": "node init && node src/app.js",
+    "dev": "node init && nodemon src/app.js"
   },
   "keywords": [],
   "author": "",
